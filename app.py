@@ -32,27 +32,28 @@ client = TelegramClient('bot_session', api_id, api_hash)
 async def handler(event):
     text = event.raw_text or ""
     
-    # Controlla se il messaggio contiene una foto/media
+    # 1. Se c'è una foto, la scarichiamo e la inviamo per PRIMA
     if event.photo:
-        # Scarica l'immagine in memoria dal messaggio di Telegram
         photo_bytes = await event.download_media(file=bytes)
-        
         if photo_bytes:
-            # Invia l'immagine e l'eventuale testo a Discord tramite file multipart
-            files = {
-                'file': ('image.jpg', photo_bytes, 'image/jpeg')
-            }
-            data = {
-                'content': text
-            }
-            requests.post(webhook_url, data=data, files=files)
-    elif text:
-        # Se è solo testo senza immagini
-        requests.post(webhook_url, json={"content": text})
+            files = {'file': ('image.jpg', photo_bytes, 'image/jpeg')}
+            requests.post(webhook_url, files=files)
+            # Breve pausa per garantire che l'immagine arrivi prima del testo
+            await asyncio.sleep(0.5)
+            
+    # 2. Se c'è del testo, lo formattiamo in modo pulito e strutturato
+    if text:
+        formatted_text = (
+            f"📦 **NUOVO PREORDINE DISPONIBILE**\n"
+            f"──────────────────────────────\n"
+            f"{text}\n"
+            f"──────────────────────────────"
+        )
+        requests.post(webhook_url, json={"content": formatted_text})
 
-    # Pausa di 1 secondo per evitare blocchi (Rate Limit) di Discord
+    # Pausa finale per evitare il blocco (Rate Limit) di Discord
     await asyncio.sleep(1)
 
-print("Userbot avviato e in ascolto (con supporto immagini)...")
+print("Userbot avviato e in ascolto (immagini prima + struttura pulita)...")
 client.start()
 client.run_until_disconnected()
