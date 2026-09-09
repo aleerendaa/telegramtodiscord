@@ -23,7 +23,7 @@ threading.Thread(target=run_web, daemon=True).start()
 api_id = int(os.environ.get('API_ID', 0))
 api_hash = os.environ.get('API_HASH', '')
 webhook_url = os.environ.get('WEBHOOK_URL', '')
-target_channel = "pokemonpreorder"
+target_channel = "https://t.me/+tNa5JDiCTVQ1ZDk0"
 
 # Usa il file di sessione che hai caricato
 client = TelegramClient('bot_session', api_id, api_hash)
