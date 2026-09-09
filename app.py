@@ -30,12 +30,29 @@ client = TelegramClient('bot_session', api_id, api_hash)
 
 @client.on(events.NewMessage(chats=target_channel))
 async def handler(event):
-    text = event.raw_text
-    if text:
+    text = event.raw_text or ""
+    
+    # Controlla se il messaggio contiene una foto/media
+    if event.photo:
+        # Scarica l'immagine in memoria dal messaggio di Telegram
+        photo_bytes = await event.download_media(file=bytes)
+        
+        if photo_bytes:
+            # Invia l'immagine e l'eventuale testo a Discord tramite file multipart
+            files = {
+                'file': ('image.jpg', photo_bytes, 'image/jpeg')
+            }
+            data = {
+                'content': text
+            }
+            requests.post(webhook_url, data=data, files=files)
+    elif text:
+        # Se è solo testo senza immagini
         requests.post(webhook_url, json={"content": text})
-        # Pausa di 1 secondo per evitare il blocco di Discord in caso di messaggi multipli
-        await asyncio.sleep(1)
 
-print("Userbot avviato e in ascolto sul canale...")
+    # Pausa di 1 secondo per evitare blocchi (Rate Limit) di Discord
+    await asyncio.sleep(1)
+
+print("Userbot avviato e in ascolto (con supporto immagini)...")
 client.start()
 client.run_until_disconnected()
