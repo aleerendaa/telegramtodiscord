@@ -28,32 +28,82 @@ target_channel = "https://t.me/+tNa5JDiCTVQ1ZDk0"
 # Usa il file di sessione che hai caricato
 client = TelegramClient('bot_session', api_id, api_hash)
 
-@client.on(events.NewMessage(chats=target_channel))
-async def handler(event):
-    text = event.raw_text or ""
+# Funzione per pulire il testo rimuovendo claim, offerte e hashtag
+def clean_message_text(text):
+    if not text:
+        return ""
     
-    # 1. Se c'è una foto, la scarichiamo e la inviamo per PRIMA
+    lines = text.split('\n')
+    cleaned_lines = []
+    
+    for line in lines:
+        line_str = line.strip()
+        # Salta le righe indesiderate (claim, offerte, hashtag)
+        if (
+            "Per prenotare" in line_str or 
+            "/claim" in line_str or 
+            "Offerto da" in line_str or 
+            line_str.startswith("#")
+        ):
+            continue
+        cleaned_lines.append(line)
+    
+    # Rimette insieme il testo pulito eliminando spazi vuoti superflui
+    result = "\n".join(cleaned_lines).strip()
+    
+    # Aggiunge la riga sotto per dividere i prodotti
+    if result:
+        result = f"{result}\n──────────────────────────────"
+        
+    return result
+
+# Gestione Album (Post con più foto insieme)
+@client.on(events.Album(chats=target_channel))
+async def album_handler(event):
+    text = ""
+    for message in event.messages:
+        if message.raw_text:
+            text = message.raw_text
+            break
+    
+    files = []
+    for i, message in enumerate(event.messages):
+        if message.photo:
+            photo_bytes = await message.download_media(file=bytes)
+            if photo_bytes:
+                files.append((f'files[{i}]', (f'image_{i}.jpg', photo_bytes, 'image/jpeg')))
+    
+    if files:
+        data = {}
+        cleaned = clean_message_text(text)
+        if cleaned:
+            data['content'] = cleaned
+        
+        requests.post(webhook_url, data=data, files=files)
+        await asyncio.sleep(1)
+
+# Gestione Messaggi Singoli (Testo o una sola foto)
+@client.on(events.NewMessage(chats=target_channel))
+async def single_handler(event):
+    if event.grouped_id:
+        return
+        
+    text = event.raw_text or ""
+    cleaned = clean_message_text(text)
+    
     if event.photo:
         photo_bytes = await event.download_media(file=bytes)
         if photo_bytes:
             files = {'file': ('image.jpg', photo_bytes, 'image/jpeg')}
-            requests.post(webhook_url, files=files)
-            # Breve pausa per garantire che l'immagine arrivi prima del testo
-            await asyncio.sleep(0.5)
-            
-    # 2. Se c'è del testo, lo formattiamo in modo pulito e strutturato
-    if text:
-        formatted_text = (
-            f"📦 **NUOVO PREORDINE DISPONIBILE**\n"
-            f"──────────────────────────────\n"
-            f"{text}\n"
-            f"──────────────────────────────"
-        )
-        requests.post(webhook_url, json={"content": formatted_text})
-
-    # Pausa finale per evitare il blocco (Rate Limit) di Discord
+            data = {}
+            if cleaned:
+                data['content'] = cleaned
+            requests.post(webhook_url, data=data, files=files)
+    elif cleaned:
+        requests.post(webhook_url, json={"content": cleaned})
+        
     await asyncio.sleep(1)
 
-print("Userbot avviato e in ascolto (immagini prima + struttura pulita)...")
+print("Userbot avviato e in ascolto (testo pulito + immagini raggruppate)...")
 client.start()
 client.run_until_disconnected()
