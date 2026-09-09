@@ -1,6 +1,7 @@
 import os
 import threading
 import asyncio
+import re
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from telethon import TelegramClient, events
 import requests
@@ -28,7 +29,30 @@ target_channel = "https://t.me/+tNa5JDiCTVQ1ZDk0"
 # Usa il file di sessione che hai caricato
 client = TelegramClient('bot_session', api_id, api_hash)
 
-# Funzione per pulire il testo rimuovendo claim, offerte e hashtag
+# Funzione per calcolare il rincaro sul prezzo trovato nel testo
+def apply_markup(match):
+    price_str = match.group(1).replace(',', '.')
+    try:
+        price = float(price_str)
+        
+        # Tabella dei rincari
+        if 1 <= price < 15:
+            price += 3
+        elif 15 <= price < 50:
+            price += 5
+        elif 50 <= price < 150:
+            price += 10
+        elif 150 <= price < 300:
+            price += 20
+        elif price >= 300:
+            price += 30
+            
+        # Restituisce il nuovo prezzo formattato con la virgola (stile italiano)
+        return f"{price:.2f}".replace('.', ',') + " €"
+    except ValueError:
+        return match.group(0)
+
+# Funzione per pulire il testo, applicare il rincaro e formattare
 def clean_message_text(text):
     if not text:
         return ""
@@ -46,12 +70,15 @@ def clean_message_text(text):
             line_str.startswith("#")
         ):
             continue
-        cleaned_lines.append(line)
+            
+        # Cerca e aggiorna il prezzo nella riga (es. "22,00 €" diventerà "27,00 €" ecc.)
+        updated_line = re.sub(r'(\d+[\.,]\d{2})\s*€', apply_markup, line_str)
+        cleaned_lines.append(updated_line)
     
-    # Rimette insieme il testo pulito eliminando spazi vuoti superflui
+    # Unisce il testo pulito
     result = "\n".join(cleaned_lines).strip()
     
-    # Aggiunge la riga sotto per dividere i prodotti
+    # Aggiunge la riga divisoria alla fine del prodotto
     if result:
         result = f"{result}\n──────────────────────────────"
         
@@ -73,13 +100,15 @@ async def album_handler(event):
             if photo_bytes:
                 files.append((f'files[{i}]', (f'image_{i}.jpg', photo_bytes, 'image/jpeg')))
     
+    # 1. Invia prima le immagini come album
     if files:
-        data = {}
-        cleaned = clean_message_text(text)
-        if cleaned:
-            data['content'] = cleaned
+        requests.post(webhook_url, files=files)
+        await asyncio.sleep(1.5) 
         
-        requests.post(webhook_url, data=data, files=files)
+    # 2. Invia il testo pulito con prezzo ricaricato DOPO le immagini
+    cleaned = clean_message_text(text)
+    if cleaned:
+        requests.post(webhook_url, json={"content": cleaned})
         await asyncio.sleep(1)
 
 # Gestione Messaggi Singoli (Testo o una sola foto)
@@ -92,18 +121,23 @@ async def single_handler(event):
     cleaned = clean_message_text(text)
     
     if event.photo:
+        # 1. Invia prima la foto singola
         photo_bytes = await event.download_media(file=bytes)
         if photo_bytes:
             files = {'file': ('image.jpg', photo_bytes, 'image/jpeg')}
-            data = {}
-            if cleaned:
-                data['content'] = cleaned
-            requests.post(webhook_url, data=data, files=files)
+            requests.post(webhook_url, files=files)
+            await asyncio.sleep(1.5)
+            
+        # 2. Invia il testo DOPO la foto
+        if cleaned:
+            requests.post(webhook_url, json={"content": cleaned})
+            
     elif cleaned:
+        # Se è solo testo
         requests.post(webhook_url, json={"content": cleaned})
         
     await asyncio.sleep(1)
 
-print("Userbot avviato e in ascolto (testo pulito + immagini raggruppate)...")
+print("Userbot avviato e in ascolto (immagini prime + rincaro prezzi attivo)...")
 client.start()
 client.run_until_disconnected()
