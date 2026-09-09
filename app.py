@@ -2,11 +2,15 @@ import os
 import threading
 import asyncio
 import re
+import sqlite3
+from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from telethon import TelegramClient, events
 import requests
+import discord
+from discord.ext import commands
 
-# 1. Piccolo server web finto per mantenere felice Render
+# 1. Server web finto per mantenere felice Render
 class SimpleHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -20,44 +24,130 @@ def run_web():
 
 threading.Thread(target=run_web, daemon=True).start()
 
-# 2. Configurazione Telegram
-api_id = int(os.environ.get('API_ID', 0))
-api_hash = os.environ.get('API_HASH', '')
-target_channel = "https://t.me/+tNa5JDiCTVQ1ZDk0"
+# 2. Configurazione Credenziali
+API_ID = int(os.environ.get('API_ID', 0))
+API_HASH = os.environ.get('API_HASH', '')
+TELEGRAM_CHANNEL = "https://t.me/+tNa5JDiCTVQ1ZDk0"
 
-# Mappa dei webhook in base agli hashtag
-WEBHOOKS = {
-    "pokemon": "https://discord.com/api/webhooks/1547376609642942486/Wy4CtOMOpOTmPO7Z5TjIZoEuYjV6UFSlzTaI6k35dc_ZZ1gEehVgkUwlqdKMZtTYbGNP",
-    "onepiece": "https://discord.com/api/webhooks/1541457812733952110/ae90a97cwBxOqrKR1HvpL9uo8D3wYsQcFTdXPEv8M10Wasl0iCI1B8zTgI2nctg2ozW8",
-    "dragonball": "https://discord.com/api/webhooks/1532483075303276675/5BKO9qohcH1cXu4KEMoUApMvd71QA6S4LxN2U7Acmt1AEVoV9fDLr0izQqMkXZu7Jh07",
-    "altro": "https://discord.com/api/webhooks/1534305426706006047/RWumSsDuJ3nJ07ssqBJuMaq1rbu8yTVhs5J3QJDr7iGliNJxokXzVUPoxCtGXOB-eHnI"
-}
+# Token e Canali Discord configurati
+DISCORD_TOKEN = os.environ.get('DISCORD_TOKEN', '')
+CHANNEL_POKEMON = 1532111869832069242
+CHANNEL_ONEPIECE = 1532112469567471938
+CHANNEL_DRAGONBALL = 1532112759490351244
+CHANNEL_ALTRO = 1533540767396794479
+CHANNEL_ADMIN_LOGS = 1547376481477459988
 
-# Usa il file di sessione che hai caricato
-client = TelegramClient('bot_session', api_id, api_hash)
+# Inizializzazione Database SQLite locale
+def init_db():
+    conn = sqlite3.connect('ordini.db')
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS ordini (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT,
+            username TEXT,
+            product_name TEXT,
+            price TEXT,
+            quantity INTEGER,
+            timestamp TEXT
+        )
+    ''')
+    conn.commit()
+    conn.close()
 
-# Funzione per determinare il webhook giusto in base al testo/hashtag
-def get_webhook_url(text):
+init_db()
+
+# Funzione per salvare l'ordine nel database
+def save_order(user_id, username, product_name, price, quantity):
+    conn = sqlite3.connect('ordini.db')
+    cursor = conn.cursor()
+    cursor.execute('''
+        INSERT INTO ordini (user_id, username, product_name, price, quantity, timestamp)
+        VALUES (?, ?, ?, ?, ?, ?)
+    ''', (str(user_id), str(username), product_name, price, int(quantity), datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+    conn.commit()
+    conn.close()
+
+# 3. Configurazione Bot Discord con Intents
+intents = discord.Intents.default()
+intents.message_content = True
+bot = commands.Bot(command_prefix="!", intents=intents)
+
+# Modale per inserire la quantità quando si clicca "Claim"
+class ClaimModal(discord.ui.Modal, title="Conferma Preordine"):
+    quantita = discord.ui.TextInput(
+        label="Quantità desiderata",
+        placeholder="Es. 1, 2, 3...",
+        min_length=1,
+        max_length=3,
+        required=True
+    )
+
+    def __init__(self, product_name, price):
+        super().__init__()
+        self.product_name = product_name
+        self.price = price
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            qty = int(self.quantita.value)
+            if qty <= 0:
+                raise ValueError()
+        except ValueError:
+            await interaction.response.send_message("❌ Inserisci un numero valido maggiore di 0.", ephemeral=True)
+            return
+
+        # Salva nel database SQLite
+        save_order(interaction.user.id, interaction.user.name, self.product_name, self.price, qty)
+
+        # Risposta privata all'utente
+        await interaction.response.send_message(
+            f"✅ **Ordine registrato con successo!**\n📦 Prodotto: {self.product_name}\n🔢 Quantità: {qty}\n💰 Prezzo unitario: {self.price}",
+            ephemeral=True
+        )
+
+        # Invia notifica nel canale admin
+        admin_channel = bot.get_channel(CHANNEL_ADMIN_LOGS)
+        if admin_channel:
+            embed = discord.Embed(title="🛒 Nuovo Claim Ricevuto!", color=discord.Color.green())
+            embed.add_field(name="Utente", value=f"{interaction.user.mention} ({interaction.user.name})", inline=False)
+            embed.add_field(name="Prodotto", value=self.product_name, inline=False)
+            embed.add_field(name="Quantità", value=str(qty), inline=True)
+            embed.add_field(name="Prezzo Unitario", value=self.price, inline=True)
+            embed.timestamp = datetime.now()
+            await admin_channel.send(embed=embed)
+
+# View con il pulsante Claim
+class ClaimView(discord.ui.View):
+    def __init__(self, product_name, price):
+        super().__init__(timeout=None) # Il pulsante non scade mai
+        self.product_name = product_name
+        self.price = price
+
+    @discord.ui.button(label="🛒 CLAIM", style=discord.ButtonStyle.success, custom_id="claim_button")
+    functools = None # placeholder
+    async def claim_button_callback(self, interaction: discord.Interaction, button: discord.ui.Button):
+        modal = ClaimModal(self.product_name, self.price)
+        await interaction.response.send_modal(modal)
+
+# 4. Logica Telegram & Smistamento
+def get_discord_channel_id(text):
     if not text:
-        return WEBHOOKS["altro"]
-    
+        return CHANNEL_ALTRO
     text_lower = text.lower()
     if "#pokemon" in text_lower:
-        return WEBHOOKS["pokemon"]
+        return CHANNEL_POKEMON
     elif "#onepiece" in text_lower:
-        return WEBHOOKS["onepiece"]
+        return CHANNEL_ONEPIECE
     elif "#dragonball" in text_lower:
-        return WEBHOOKS["dragonball"]
+        return CHANNEL_DRAGONBALL
     else:
-        return WEBHOOKS["altro"]
+        return CHANNEL_ALTRO
 
-# Funzione per calcolare il rincaro sul prezzo trovato nel testo
 def apply_markup(match):
     price_str = match.group(1).replace(',', '.')
     try:
         price = float(price_str)
-        
-        # Tabella dei rincari
         if 1 <= price < 15:
             price += 3
         elif 15 <= price < 50:
@@ -68,22 +158,21 @@ def apply_markup(match):
             price += 20
         elif price >= 300:
             price += 30
-            
         return f"{price:.2f}".replace('.', ',') + " €"
     except ValueError:
         return match.group(0)
 
-# Funzione per pulire il testo, applicare il rincaro e formattare
 def clean_message_text(text):
     if not text:
-        return ""
+        return "", ""
     
     lines = text.split('\n')
     cleaned_lines = []
+    product_title = "Prodotto Preorder"
+    product_price = "N/D"
     
-    for line in lines:
+    for i, line in enumerate(lines):
         line_str = line.strip()
-        # Salta le righe indesiderate (claim, offerte, hashtag)
         if (
             "Per prenotare" in line_str or 
             "/claim" in line_str or 
@@ -92,19 +181,27 @@ def clean_message_text(text):
         ):
             continue
             
-        # Cerca e aggiorna il prezzo nella riga
+        # Cerca il titolo (di solito è la prima riga utile)
+        if i == 0 and line_str:
+            product_title = line_str
+
+        # Cerca e ricarica il prezzo
         updated_line = re.sub(r'(\d+[\.,]\d{2})\s*€', apply_markup, line_str)
+        if "€" in updated_line and product_price == "N/D":
+            product_price = updated_line
+
         cleaned_lines.append(updated_line)
     
     result = "\n".join(cleaned_lines).strip()
-    
     if result:
         result = f"{result}\n──────────────────────────────"
         
-    return result
+    return result, product_title, product_price
 
-# Gestione Album (Post con più foto insieme)
-@client.on(events.Album(chats=target_channel))
+# Avvio del client Telegram
+tg_client = TelegramClient('bot_session', API_ID, API_HASH)
+
+@tg_client.on(events.Album(chats=TELEGRAM_CHANNEL))
 async def album_handler(event):
     text = ""
     for message in event.messages:
@@ -112,57 +209,63 @@ async def album_handler(event):
             text = message.raw_text
             break
     
-    # Sceglie il webhook in base al testo originale (prima che venga ripulito degli hashtag)
-    current_webhook = get_webhook_url(text)
-    
+    target_channel_id = get_discord_channel_id(text)
+    channel = bot.get_channel(target_channel_id)
+    if not channel:
+        return
+
     files = []
     for i, message in enumerate(event.messages):
         if message.photo:
             photo_bytes = await message.download_media(file=bytes)
             if photo_bytes:
-                files.append((f'files[{i}]', (f'image_{i}.jpg', photo_bytes, 'image/jpeg')))
+                files.append(discord.File(photo_bytes, filename=f'image_{i}.jpg'))
     
-    # 1. Invia prima le immagini al webhook corretto
-    if files:
-        requests.post(current_webhook, files=files)
-        await asyncio.sleep(1.5) 
-        
-    # 2. Invia il testo pulito con prezzo ricaricato DOPO le immagini
-    cleaned = clean_message_text(text)
-    if cleaned:
-        requests.post(current_webhook, json={"content": cleaned})
-        await asyncio.sleep(1)
+    cleaned, title, price = clean_message_text(text)
 
-# Gestione Messaggi Singoli (Testo o una sola foto)
-@client.on(events.NewMessage(chats=target_channel))
+    # Invia immagini e testo con pulsante da parte del bot Discord
+    if files:
+        await channel.send(files=files)
+        await asyncio.sleep(1.5)
+        
+    if cleaned:
+        view = ClaimView(title, price)
+        await channel.send(content=cleaned, view=view)
+
+@tg_client.on(events.NewMessage(chats=TELEGRAM_CHANNEL))
 async def single_handler(event):
     if event.grouped_id:
         return
         
     text = event.raw_text or ""
-    current_webhook = get_webhook_url(text)
-    cleaned = clean_message_text(text)
+    target_channel_id = get_discord_channel_id(text)
+    channel = bot.get_channel(target_channel_id)
+    if not channel:
+        return
+
+    cleaned, title, price = clean_message_text(text)
     
     if event.photo:
-        # 1. Invia prima la foto singola al webhook corretto
-        photo_bytes = await message_bytes = await event.download_media(file=bytes) if hasattr(event, 'download_media') else await event.download_media(file=bytes)
-        # Nota: usiamo download_media standard
         photo_bytes = await event.download_media(file=bytes)
         if photo_bytes:
-            files = {'file': ('image.jpg', photo_bytes, 'image/jpeg')}
-            requests.post(current_webhook, files=files)
+            file = discord.File(photo_bytes, filename='image.jpg')
+            await channel.send(file=file)
             await asyncio.sleep(1.5)
             
-        # 2. Invia il testo DOPO la foto
         if cleaned:
-            requests.post(current_webhook, json={"content": cleaned})
-            
+            view = ClaimView(title, price)
+            await channel.send(content=cleaned, view=view)
     elif cleaned:
-        # Se è solo testo
-        requests.post(current_webhook, json={"content": cleaned})
-        
-    await asyncio.sleep(1)
+        view = ClaimView(title, price)
+        await channel.send(content=cleaned, view=view)
 
-print("Userbot avviato e in ascolto (smistamento webhook per categoria attivo)...")
-client.start()
-client.run_until_disconnected()
+# 5. Avvio simultaneo di Telegram e Discord
+@bot.event
+async def on_ready():
+    print(f"Bot Discord connesso come {bot.user}")
+    # Avvia Telegram in background
+    await tg_client.start()
+    print("Userbot Telegram avviato e in ascolto...")
+
+if __name__ == "__main__":
+    bot.run(DISCORD_TOKEN)
