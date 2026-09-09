@@ -23,11 +23,33 @@ threading.Thread(target=run_web, daemon=True).start()
 # 2. Configurazione Telegram
 api_id = int(os.environ.get('API_ID', 0))
 api_hash = os.environ.get('API_HASH', '')
-webhook_url = os.environ.get('WEBHOOK_URL', '')
 target_channel = "https://t.me/+tNa5JDiCTVQ1ZDk0"
+
+# Mappa dei webhook in base agli hashtag
+WEBHOOKS = {
+    "pokemon": "https://discord.com/api/webhooks/1547376609642942486/Wy4CtOMOpOTmPO7Z5TjIZoEuYjV6UFSlzTaI6k35dc_ZZ1gEehVgkUwlqdKMZtTYbGNP",
+    "onepiece": "https://discord.com/api/webhooks/1541457812733952110/ae90a97cwBxOqrKR1HvpL9uo8D3wYsQcFTdXPEv8M10Wasl0iCI1B8zTgI2nctg2ozW8",
+    "dragonball": "https://discord.com/api/webhooks/1532483075303276675/5BKO9qohcH1cXu4KEMoUApMvd71QA6S4LxN2U7Acmt1AEVoV9fDLr0izQqMkXZu7Jh07",
+    "altro": "https://discord.com/api/webhooks/1534305426706006047/RWumSsDuJ3nJ07ssqBJuMaq1rbu8yTVhs5J3QJDr7iGliNJxokXzVUPoxCtGXOB-eHnI"
+}
 
 # Usa il file di sessione che hai caricato
 client = TelegramClient('bot_session', api_id, api_hash)
+
+# Funzione per determinare il webhook giusto in base al testo/hashtag
+def get_webhook_url(text):
+    if not text:
+        return WEBHOOKS["altro"]
+    
+    text_lower = text.lower()
+    if "#pokemon" in text_lower:
+        return WEBHOOKS["pokemon"]
+    elif "#onepiece" in text_lower:
+        return WEBHOOKS["onepiece"]
+    elif "#dragonball" in text_lower:
+        return WEBHOOKS["dragonball"]
+    else:
+        return WEBHOOKS["altro"]
 
 # Funzione per calcolare il rincaro sul prezzo trovato nel testo
 def apply_markup(match):
@@ -47,7 +69,6 @@ def apply_markup(match):
         elif price >= 300:
             price += 30
             
-        # Restituisce il nuovo prezzo formattato con la virgola (stile italiano)
         return f"{price:.2f}".replace('.', ',') + " €"
     except ValueError:
         return match.group(0)
@@ -71,14 +92,12 @@ def clean_message_text(text):
         ):
             continue
             
-        # Cerca e aggiorna il prezzo nella riga (es. "22,00 €" diventerà "27,00 €" ecc.)
+        # Cerca e aggiorna il prezzo nella riga
         updated_line = re.sub(r'(\d+[\.,]\d{2})\s*€', apply_markup, line_str)
         cleaned_lines.append(updated_line)
     
-    # Unisce il testo pulito
     result = "\n".join(cleaned_lines).strip()
     
-    # Aggiunge la riga divisoria alla fine del prodotto
     if result:
         result = f"{result}\n──────────────────────────────"
         
@@ -93,6 +112,9 @@ async def album_handler(event):
             text = message.raw_text
             break
     
+    # Sceglie il webhook in base al testo originale (prima che venga ripulito degli hashtag)
+    current_webhook = get_webhook_url(text)
+    
     files = []
     for i, message in enumerate(event.messages):
         if message.photo:
@@ -100,15 +122,15 @@ async def album_handler(event):
             if photo_bytes:
                 files.append((f'files[{i}]', (f'image_{i}.jpg', photo_bytes, 'image/jpeg')))
     
-    # 1. Invia prima le immagini come album
+    # 1. Invia prima le immagini al webhook corretto
     if files:
-        requests.post(webhook_url, files=files)
+        requests.post(current_webhook, files=files)
         await asyncio.sleep(1.5) 
         
     # 2. Invia il testo pulito con prezzo ricaricato DOPO le immagini
     cleaned = clean_message_text(text)
     if cleaned:
-        requests.post(webhook_url, json={"content": cleaned})
+        requests.post(current_webhook, json={"content": cleaned})
         await asyncio.sleep(1)
 
 # Gestione Messaggi Singoli (Testo o una sola foto)
@@ -118,26 +140,29 @@ async def single_handler(event):
         return
         
     text = event.raw_text or ""
+    current_webhook = get_webhook_url(text)
     cleaned = clean_message_text(text)
     
     if event.photo:
-        # 1. Invia prima la foto singola
+        # 1. Invia prima la foto singola al webhook corretto
+        photo_bytes = await message_bytes = await event.download_media(file=bytes) if hasattr(event, 'download_media') else await event.download_media(file=bytes)
+        # Nota: usiamo download_media standard
         photo_bytes = await event.download_media(file=bytes)
         if photo_bytes:
             files = {'file': ('image.jpg', photo_bytes, 'image/jpeg')}
-            requests.post(webhook_url, files=files)
+            requests.post(current_webhook, files=files)
             await asyncio.sleep(1.5)
             
         # 2. Invia il testo DOPO la foto
         if cleaned:
-            requests.post(webhook_url, json={"content": cleaned})
+            requests.post(current_webhook, json={"content": cleaned})
             
     elif cleaned:
         # Se è solo testo
-        requests.post(webhook_url, json={"content": cleaned})
+        requests.post(current_webhook, json={"content": cleaned})
         
     await asyncio.sleep(1)
 
-print("Userbot avviato e in ascolto (immagini prime + rincaro prezzi attivo)...")
+print("Userbot avviato e in ascolto (smistamento webhook per categoria attivo)...")
 client.start()
 client.run_until_disconnected()
