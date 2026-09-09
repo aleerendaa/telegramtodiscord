@@ -4,7 +4,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from telethon import TelegramClient, events
 import requests
 
-# 1. Piccolo server web finto per soddisfare Render
+# 1. Piccolo server web finto per mantenere felice Render
 class SimpleHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -16,17 +16,16 @@ def run_web():
     server = HTTPServer(("0.0.0.0", port), SimpleHandler)
     server.serve_forever()
 
-# Avvia il server web in un "thread" separato
 threading.Thread(target=run_web, daemon=True).start()
 
-# 2. Il tuo codice Telegram originale
+# 2. Configurazione Telegram
 api_id = int(os.environ.get('API_ID', 0))
 api_hash = os.environ.get('API_HASH', '')
-bot_token = os.environ.get('BOT_TOKEN', '')
 webhook_url = os.environ.get('WEBHOOK_URL', '')
 target_channel = "pokemonpreorder"
 
-client = TelegramClient('bot_session', api_id, api_hash).start(bot_token=bot_token)
+# Usa il file di sessione che hai appena caricato
+client = TelegramClient('bot_session', api_id, api_hash)
 
 @client.on(events.NewMessage(chats=target_channel))
 async def handler(event):
@@ -34,5 +33,6 @@ async def handler(event):
     if text:
         requests.post(webhook_url, json={"content": text})
 
-print("Bot avviato e in ascolto...")
+print("Userbot avviato e in ascolto sul canale...")
+client.start()
 client.run_until_disconnected()
