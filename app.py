@@ -29,7 +29,7 @@ API_ID = int(os.environ.get('API_ID', 0))
 API_HASH = os.environ.get('API_HASH', '')
 TELEGRAM_CHANNEL = "https://t.me/+tNa5JDiCTVQ1ZDk0"
 
-# Token e Canali Discord configurati
+# Token letto in modo sicuro dalle variabili d'ambiente di Render
 DISCORD_TOKEN = os.environ.get('DISCORD_TOKEN', '')
 CHANNEL_POKEMON = 1532111869832069242
 CHANNEL_ONEPIECE = 1532112469567471938
@@ -125,7 +125,6 @@ class ClaimView(discord.ui.View):
         self.price = price
 
     @discord.ui.button(label="🛒 CLAIM", style=discord.ButtonStyle.success, custom_id="claim_button")
-    functools = None # placeholder
     async def claim_button_callback(self, interaction: discord.Interaction, button: discord.ui.Button):
         modal = ClaimModal(self.product_name, self.price)
         await interaction.response.send_modal(modal)
@@ -164,7 +163,7 @@ def apply_markup(match):
 
 def clean_message_text(text):
     if not text:
-        return "", ""
+        return "", "", ""
     
     lines = text.split('\n')
     cleaned_lines = []
@@ -181,11 +180,9 @@ def clean_message_text(text):
         ):
             continue
             
-        # Cerca il titolo (di solito è la prima riga utile)
         if i == 0 and line_str:
             product_title = line_str
 
-        # Cerca e ricarica il prezzo
         updated_line = re.sub(r'(\d+[\.,]\d{2})\s*€', apply_markup, line_str)
         if "€" in updated_line and product_price == "N/D":
             product_price = updated_line
@@ -223,7 +220,6 @@ async def album_handler(event):
     
     cleaned, title, price = clean_message_text(text)
 
-    # Invia immagini e testo con pulsante da parte del bot Discord
     if files:
         await channel.send(files=files)
         await asyncio.sleep(1.5)
@@ -263,9 +259,11 @@ async def single_handler(event):
 @bot.event
 async def on_ready():
     print(f"Bot Discord connesso come {bot.user}")
-    # Avvia Telegram in background
     await tg_client.start()
     print("Userbot Telegram avviato e in ascolto...")
 
 if __name__ == "__main__":
-    bot.run(DISCORD_TOKEN)
+    if not DISCORD_TOKEN:
+        print("Errore: DISCORD_TOKEN non trovato nelle variabili d'ambiente!")
+    else:
+        bot.run(DISCORD_TOKEN)
