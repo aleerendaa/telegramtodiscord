@@ -1,5 +1,6 @@
 import os
 import threading
+import asyncio
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from telethon import TelegramClient, events
 import requests
@@ -24,7 +25,7 @@ api_hash = os.environ.get('API_HASH', '')
 webhook_url = os.environ.get('WEBHOOK_URL', '')
 target_channel = "pokemonpreorder"
 
-# Usa il file di sessione che hai appena caricato
+# Usa il file di sessione che hai caricato
 client = TelegramClient('bot_session', api_id, api_hash)
 
 @client.on(events.NewMessage(chats=target_channel))
@@ -32,6 +33,8 @@ async def handler(event):
     text = event.raw_text
     if text:
         requests.post(webhook_url, json={"content": text})
+        # Pausa di 1 secondo per evitare il blocco di Discord in caso di messaggi multipli
+        await asyncio.sleep(1)
 
 print("Userbot avviato e in ascolto sul canale...")
 client.start()
