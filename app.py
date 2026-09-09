@@ -2,11 +2,11 @@ import os
 from telethon import TelegramClient, events
 import requests
 
-# Prende i dati dalle variabili d'ambiente del pannello
-api_id = int(os.environ.get('30476464', 0))
-api_hash = os.environ.get('a649bf57ad8523670eb38c547cc8bea1', '')
-webhook_url = os.environ.get('https://discord.com/api/webhooks/1546517396116865194/UwM6WTilUEQRBwL6ZAbYm9VbUGKqM8utxO_Ta6-yxBDvW5Oi1h7SB8XbukfrQwj-LrF1', '')
-target_channel = 'pokemonpreorder'
+# Inserisci qui direttamente i tuoi dati per evitare errori di lettura su Render
+api_id = 30476464          # <-- Sostituisci con il tuo API_ID numerico (senza virgolette)
+api_hash = "a649bf57ad8523670eb38c547cc8bea1"  # <-- Sostituisci con il tuo API_HASH tra virgolette
+webhook_url = "https://discord.com/api/webhooks/1546517396116865194/UwM6WTilUEQRBwL6ZAbYm9VbUGKqM8utxO_Ta6-yxBDvW5Oi1h7SB8XbukfrQwj-LrF1" # <-- Sostituisci con l'URL del webhook
+target_channel = "pokemonpreorder"
 
 client = TelegramClient('session_string', api_id, api_hash)
 
