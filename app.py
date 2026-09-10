@@ -1,13 +1,22 @@
-import os
+os
 import threading
 import asyncio
 import re
 import sqlite3
+import os
 from datetime import datetime, time, timezone
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from telethon import TelegramClient, events
 import discord
 from discord.ext import commands, tasks
+
+# Gestione Database (Supporta sia SQLite locale che PostgreSQL esterno come Supabase)
+DATABASE_URL = os.environ.get('DATABASE_URL')
+is_postgres = bool(DATABASE_URL)
+
+if is_postgres:
+    import psycopg2
+    import io
 
 # 1. Server web per Render
 class SimpleHandler(BaseHTTPRequestHandler):
@@ -36,40 +45,68 @@ CHANNEL_ONEPIECE = 1532111869832069242
 CHANNEL_DRAGONBALL = 1532112469567471938
 CHANNEL_ALTRO = 1532112759490351244
 
-# Inizializzazione Database SQLite locale
+# Inizializzazione Database
+def get_db_connection():
+    if is_postgres:
+        return psycopg2.connect(DATABASE_URL)
+    else:
+        return sqlite3.connect('ordini.db')
+
 def init_db():
-    conn = sqlite3.connect('ordini.db')
+    conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS ordini (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id TEXT,
-            username TEXT,
-            product_name TEXT,
-            price TEXT,
-            quantity INTEGER,
-            timestamp TEXT,
-            status TEXT DEFAULT 'Da pagare'
-        )
-    ''')
-    try:
-        cursor.execute("ALTER TABLE ordini ADD COLUMN status TEXT DEFAULT 'Da pagare'")
-    except sqlite3.OperationalError:
-        pass
+    if is_postgres:
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS ordini (
+                id SERIAL PRIMARY KEY,
+                user_id TEXT,
+                username TEXT,
+                product_name TEXT,
+                price TEXT,
+                quantity INTEGER,
+                timestamp TEXT,
+                status TEXT DEFAULT 'Da pagare'
+            )
+        ''')
+    else:
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS ordini (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT,
+                username TEXT,
+                product_name TEXT,
+                price TEXT,
+                quantity INTEGER,
+                timestamp TEXT,
+                status TEXT DEFAULT 'Da pagare'
+            )
+        ''')
     conn.commit()
+    cursor.close()
     conn.close()
 
 init_db()
 
 def save_order(user_id, username, product_name, price, quantity):
-    conn = sqlite3.connect('ordini.db')
+    conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute('''
-        INSERT INTO ordini (user_id, username, product_name, price, quantity, timestamp, status)
-        VALUES (?, ?, ?, ?, ?, ?, 'Da pagare')
-    ''', (str(user_id), str(username), product_name, price, int(quantity), datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-    order_id = cursor.lastrowid
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    if is_postgres:
+        cursor.execute('''
+            INSERT INTO ordini (user_id, username, product_name, price, quantity, timestamp, status)
+            VALUES (%s, %s, %s, %s, %s, %s, 'Da pagare') RETURNING id
+        ''', (str(user_id), str(username), product_name, price, int(quantity), timestamp))
+        order_id = cursor.fetchone()[0]
+    else:
+        cursor.execute('''
+            INSERT INTO ordini (user_id, username, product_name, price, quantity, timestamp, status)
+            VALUES (?, ?, ?, ?, ?, ?, 'Da pagare')
+        ''', (str(user_id), str(username), product_name, price, int(quantity), timestamp))
+        order_id = cursor.lastrowid
+        
     conn.commit()
+    cursor.close()
     conn.close()
     return order_id
 
@@ -144,10 +181,14 @@ class StatusSelect(discord.ui.Select):
 
     async def callback(self, interaction: discord.Interaction):
         nuovo_stato = self.values[0]
-        conn = sqlite3.connect('ordini.db')
+        conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("UPDATE ordini SET status = ? WHERE id = ?", (nuovo_stato, self.order_id))
+        if is_postgres:
+            cursor.execute("UPDATE ordini SET status = %s WHERE id = %s", (nuovo_stato, self.order_id))
+        else:
+            cursor.execute("UPDATE ordini SET status = ? WHERE id = ?", (nuovo_stato, self.order_id))
         conn.commit()
+        cursor.close()
         conn.close()
 
         await interaction.response.send_message(f"✅ L'ordine **#{self.order_id}** è stato aggiornato a: **{nuovo_stato}**", ephemeral=True)
@@ -177,10 +218,26 @@ class OrderManagementView(discord.ui.View):
 
     @discord.ui.button(label="📥 Scarica Database Ordini", style=discord.ButtonStyle.secondary, emoji="📊", row=1)
     async def download_db_callback(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if os.path.exists("ordini.db"):
-            await interaction.response.send_message("Ecco il file completo del database con tutti gli ordini registrati:", file=discord.File("ordini.db"), ephemeral=True)
+        if is_postgres:
+            # Estrae i dati in formato file CSV o di testo per il download su Postgres
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT id, user_id, username, product_name, price, quantity, timestamp, status FROM ordini ORDER BY id DESC")
+            rows = cursor.fetchall()
+            cursor.close()
+            conn.close()
+
+            csv_content = "ID,User ID,Username,Prodotto,Prezzo,Quantita,Timestamp,Stato\n"
+            for r in rows:
+                csv_content += f"{r[0]},{r[1]},{r[2]},\"{r[3]}\",{r[4]},{r[5]},{r[6]},{r[7]}\n"
+            
+            file_bytes = io.BytesIO(csv_content.encode('utf-8'))
+            await interaction.response.send_message("Ecco il file di esportazione completo degli ordini:", file=discord.File(file_bytes, filename="ordini.csv"), ephemeral=True)
         else:
-            await interaction.response.send_message("❌ Database non trovato.", ephemeral=True)
+            if os.path.exists("ordini.db"):
+                await interaction.response.send_message("Ecco il file completo del database:", file=discord.File("ordini.db"), ephemeral=True)
+            else:
+                await interaction.response.send_message("❌ Database non trovato.", ephemeral=True)
 
 # 4. Logica di Smistamento e Markup
 def get_discord_channel_id(text):
@@ -265,10 +322,14 @@ async def recap_giornaliero():
     if not admin_channel:
         return
 
-    conn = sqlite3.connect('ordini.db')
+    conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT id, username, product_name, price, quantity, status, timestamp FROM ordini WHERE status != 'Consegnato' ORDER BY id DESC LIMIT 25")
+    if is_postgres:
+        cursor.execute("SELECT id, username, product_name, price, quantity, status, timestamp FROM ordini WHERE status != 'Consegnato' ORDER BY id DESC LIMIT 25")
+    else:
+        cursor.execute("SELECT id, username, product_name, price, quantity, status, timestamp FROM ordini WHERE status != 'Consegnato' ORDER BY id DESC LIMIT 25")
     rows = cursor.fetchall()
+    cursor.close()
     conn.close()
 
     if not rows:
@@ -287,14 +348,15 @@ async def recap_giornaliero():
         )
     await admin_channel.send(embed=embed)
 
-# Unico comando Admin attivo: !menu
+# Comando Admin: !menu
 @bot.command(name="menu")
 @commands.has_permissions(administrator=True)
 async def menu_ordini(ctx):
-    conn = sqlite3.connect('ordini.db')
+    conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute('SELECT id, username, product_name, price, quantity, status, timestamp FROM ordini ORDER BY id DESC LIMIT 25')
     rows = cursor.fetchall()
+    cursor.close()
     conn.close()
 
     if not rows:
@@ -303,7 +365,7 @@ async def menu_ordini(ctx):
 
     embed = discord.Embed(
         title="📊 Menu Gestione Ordini", 
-        description="Usa il menu a tendina per modificare lo stato di un ordine o clicca sul pulsante sottostante per scaricare il file completo del database.", 
+        description="Usa il menu a tendina per modificare lo stato di un ordine o clicca sul pulsante sottostante per scaricare il file completo degli ordini.", 
         color=discord.Color.blue()
     )
     view = OrderManagementView(rows)
