@@ -1,24 +1,27 @@
 import os
 import sqlite3
 import logging
+import asyncio
 from telethon import TelegramClient, events
 import discord
 from discord.ui import Button, View
 
 # Configurazione logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 # ================= CONFIGURAZIONE CREDENZIALI =================
-API_ID = int(os.getenv("API_ID", "IL_TUO_API_ID"))
-API_HASH = os.getenv("API_HASH", "IL_TUO_API_HASH")
-DISCORD_TOKEN = os.getenv("DISCORD_TOKEN", "IL_TUO_DISCORD_TOKEN")
+API_ID = int(os.getenv("API_ID", "0"))
+API_HASH = os.getenv("API_HASH", "")
+DISCORD_TOKEN = os.getenv("DISCORD_TOKEN", "")
 
 # ================= ID CANALI DISCORD UFFICIALI =================
-CHANNEL_POKEMON = 1547376481477459988
-CHANNEL_ONEPIECE = 1532111869832069242
-CHANNEL_DRAGONBALL = 1532112469567471938
-CHANNEL_ALTRO = 1532112759490351244
-CHANNEL_ADMIN_LOGS = 1533540767396794479
+CHANNEL_IDS = {
+    "pokemon": 1547376481477459988,
+    "onepiece": 1532111869832069242,
+    "dragonball": 1532112469567471938,
+    "altro": 1532112759490351244,
+    "admin_logs": 1533540767396794479
+}
 
 # ================= INIZIALIZZAZIONE DATABASE SQLITE =================
 def init_db():
@@ -39,7 +42,7 @@ def init_db():
 
 init_db()
 
-# ================= CONFIGURAZIONE CLIENT TELEGRAM & DISCORD =================
+# ================= SETUP CLIENTS =================
 client = TelegramClient('session_name', API_ID, API_HASH)
 
 intents = discord.Intents.default()
@@ -47,28 +50,6 @@ intents.messages = True
 intents.guilds = True
 intents.message_content = True
 discord_client = discord.Client(intents=intents)
-
-# ================= FUNZIONE DI SMISTAMENTO INTELLIGENTE =================
-def get_discord_channel_id(text):
-    if not text:
-        print("⚠️ [SMISTAMENTO] Testo vuoto -> Canale ALTRO", flush=True)
-        return CHANNEL_ALTRO
-    
-    text_lower = text.lower()
-    print(f"🔍 [SMISTAMENTO] Testo ricevuto: {text_lower}", flush=True)
-    
-    if "#pokemon" in text_lower:
-        print("✅ [SMISTAMENTO] Trovato #pokemon -> ID POKEMON", flush=True)
-        return CHANNEL_POKEMON
-    elif "#onepiece" in text_lower:
-        print("✅ [SMISTAMENTO] Trovato #onepiece -> ID ONE PIECE", flush=True)
-        return CHANNEL_ONEPIECE
-    elif "#dragonball" in text_lower:
-        print("✅ [SMISTAMENTO] Trovato #dragonball -> ID DRAGON BALL", flush=True)
-        return CHANNEL_DRAGONBALL
-    else:
-        print("⚠️ [SMISTAMENTO] Nessun hashtag corrispondente -> Canale ALTRO", flush=True)
-        return CHANNEL_ALTRO
 
 # ================= INTERFACCIA CLAIM DISCORD =================
 class ClaimView(View):
@@ -94,63 +75,80 @@ class ClaimView(View):
             await interaction.response.send_message(
                 f"✅ Claim registrato con successo per {interaction.user.mention}!", ephemeral=True
             )
-            print(f"💾 [DATABASE] Salvato claim da {username} ({user_id})", flush=True)
-            
+            logging.info(f"💾 [DATABASE] Salvato claim da {username} ({user_id})")
         except Exception as e:
-            print(f"❌ [ERRORE DB] {e}", flush=True)
+            logging.error(f"❌ [ERRORE DB] {e}")
             await interaction.response.send_message(
                 "❌ Si è verificato un errore durante la registrazione del claim.", ephemeral=True
             )
 
-# ================= ASCOLTO MESSAGGI TELEGRAM =================
+# ================= LOGICA DI SMISTAMENTO =================
+def get_target_channel_id(text):
+    if not text:
+        logging.info("⚠️ [SMISTAMENTO] Testo vuoto -> Canale ALTRO")
+        return CHANNEL_IDS["altro"]
+    
+    text_lower = text.lower()
+    logging.info(f"🔍 [SMISTAMENTO] Testo ricevuto: {text_lower}")
+    
+    if "#pokemon" in text_lower:
+        logging.info("✅ [SMISTAMENTO] Trovato #pokemon -> ID POKEMON")
+        return CHANNEL_IDS["pokemon"]
+    elif "#onepiece" in text_lower:
+        logging.info("✅ [SMISTAMENTO] Trovato #onepiece -> ID ONE PIECE")
+        return CHANNEL_IDS["onepiece"]
+    elif "#dragonball" in text_lower:
+        logging.info("✅ [SMISTAMENTO] Trovato #dragonball -> ID DRAGON BALL")
+        return CHANNEL_IDS["dragonball"]
+    else:
+        logging.info("⚠️ [SMISTAMENTO] Nessun hashtag corrispondente -> Canale ALTRO")
+        return CHANNEL_IDS["altro"]
+
+# ================= EVENTO RICEZIONE TELEGRAM =================
 @client.on(events.NewMessage)
-async def my_event_handler(event):
+async def handle_telegram_message(event):
     message_text = event.raw_text
-    print(f"\n--------------------------------------------------", flush=True)
-    print(f"📩 [TELEGRAM] Messaggio ricevuto!", flush=True)
+    logging.info(f"📩 [TELEGRAM] Messaggio ricevuto!")
     
-    target_channel_id = get_discord_channel_id(message_text)
+    target_id = get_target_channel_id(message_text)
     
-    channel = discord_client.get_channel(target_channel_id)
+    channel = discord_client.get_channel(target_id)
     if not channel:
         try:
-            channel = await discord_client.fetch_channel(target_channel_id)
+            channel = await discord_client.fetch_channel(target_id)
         except Exception as e:
-            print(f"❌ [ERRORE] Impossibile trovare il canale su Discord: {e}", flush=True)
+            logging.error(f"❌ [DISCORD] Impossibile trovare il canale ID {target_id}: {e}")
             return
-
-    print(f"🎯 [INVIO] Destinazione canale: #{channel.name} (ID: {target_channel_id})", flush=True)
+            
+    logging.info(f"🎯 [INVIO] Destinazione canale: #{channel.name} (ID: {target_id})")
     
     try:
         view = ClaimView(item_description=message_text[:100])
         await channel.send(content=message_text, view=view)
-        print(f"✨ [SUCCESSO] Messaggio spedito correttamente!", flush=True)
+        logging.info(f"✨ [SUCCESSO] Messaggio spedito correttamente!")
     except Exception as e:
-        print(f"❌ [ERRORE INVIO] {e}", flush=True)
-    print(f"--------------------------------------------------", flush=True)
+        logging.error(f"❌ [ERRORE INVIO] {e}")
 
-# ================= EVENTO AVVIO DISCORD =================
+# ================= EVENTO PRONTEZZA DISCORD =================
 @discord_client.event
 async def on_ready():
-    print(f"🤖 Bot Discord connesso come {discord_client.user}", flush=True)
+    logging.info(f"🤖 Bot Discord connesso come {discord_client.user}")
 
-# ================= AVVIAMENTO SISTEMA =================
+# ================= MAIN ASINCRONO UNIFICATO =================
+async def main():
+    logging.info("🚀 Avvio dei client in corso...")
+    
+    # Avvia Discord in background
+    asyncio.create_task(discord_client.start(DISCORD_TOKEN))
+    
+    # Avvia Telethon gestendo la connessione senza prompt bloccanti
+    await client.start()
+    logging.info("✅ [TELEGRAM] Userbot connesso e in ascolto!")
+    
+    await client.run_until_disconnected()
+
 if __name__ == "__main__":
-    import threading
-    import asyncio
-    
-    def run_discord():
-        discord_client.run(DISCORD_TOKEN)
-        
-    discord_thread = threading.Thread(target=run_discord)
-    discord_thread.start()
-    
-    print("🚀 Userbot Telegram avviato e in ascolto...", flush=True)
-    
-    # Avvio sicuro di Telethon che non crasha su Render
-    loop = asyncio.get_event_loop()
     try:
-        loop.run_until_complete(client.start())
-        client.run_until_disconnected()
-    except Exception as e:
-        print(f"❌ Errore critico Telegram: {e}", flush=True)
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logging.info("🛑 Arresto del sistema in corso...")
