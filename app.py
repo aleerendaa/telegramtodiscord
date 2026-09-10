@@ -3,11 +3,11 @@ import threading
 import asyncio
 import re
 import sqlite3
-from datetime import datetime
+from datetime import datetime, time, timezone
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from telethon import TelegramClient, events
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 # 1. Server web per Render
 class SimpleHandler(BaseHTTPRequestHandler):
@@ -30,11 +30,11 @@ TELEGRAM_CHANNEL = "https://t.me/+tNa5JDiCTVQ1ZDk0"
 DISCORD_TOKEN = os.environ.get('DISCORD_TOKEN', '')
 
 # ID Canali Discord ufficiali
-CHANNEL_ADMIN_LOGS = 1533540767396794479
-CHANNEL_POKEMON = 1547376481477459988
-CHANNEL_ONEPIECE = 1532111869832069242
-CHANNEL_DRAGONBALL = 1532112469567471938
-CHANNEL_ALTRO = 1532112759490351244
+CHANNEL_ADMIN_LOGS = 1547376481477459988
+CHANNEL_POKEMON = 1532111869832069242
+CHANNEL_ONEPIECE = 1532112469567471938
+CHANNEL_DRAGONBALL = 1532112759490351244
+CHANNEL_ALTRO = 1533540767396794479
 
 # Inizializzazione Database SQLite locale
 def init_db():
@@ -48,9 +48,14 @@ def init_db():
             product_name TEXT,
             price TEXT,
             quantity INTEGER,
-            timestamp TEXT
+            timestamp TEXT,
+            status TEXT DEFAULT 'Ordinato'
         )
     ''')
+    try:
+        cursor.execute("ALTER TABLE ordini ADD COLUMN status TEXT DEFAULT 'Ordinato'")
+    except sqlite3.OperationalError:
+        pass
     conn.commit()
     conn.close()
 
@@ -60,16 +65,51 @@ def save_order(user_id, username, product_name, price, quantity):
     conn = sqlite3.connect('ordini.db')
     cursor = conn.cursor()
     cursor.execute('''
-        INSERT INTO ordini (user_id, username, product_name, price, quantity, timestamp)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO ordini (user_id, username, product_name, price, quantity, timestamp, status)
+        VALUES (?, ?, ?, ?, ?, ?, 'Ordinato')
     ''', (str(user_id), str(username), product_name, price, int(quantity), datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+    order_id = cursor.lastrowid
     conn.commit()
     conn.close()
+    return order_id
 
-# 3. Configurazione Bot Discord
+# 3. Configurazione Bot Discord e View per Admin
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
+
+class AdminActionView(discord.ui.View):
+    def __init__(self, order_id):
+        super().__init__(timeout=None)
+        self.order_id = order_id
+
+    @discord.ui.button(label="💳 Segna come Pagato", style=discord.ButtonStyle.primary, custom_id="btn_pagato")
+    async def segna_pagato(self, interaction: discord.Interaction, button: discord.ui.Button):
+        conn = sqlite3.connect('ordini.db')
+        cursor = conn.cursor()
+        cursor.execute("UPDATE ordini SET status = 'Pagato' WHERE id = ?", (self.order_id,))
+        conn.commit()
+        conn.close()
+        
+        button.label = "✅ Pagato"
+        button.style = discord.ButtonStyle.success
+        button.disabled = True
+        await interaction.response.edit_message(view=self)
+        await interaction.followup.send(f"💳 L'ordine **#{self.order_id}** è stato segnato come **PAGATO**.", ephemeral=True)
+
+    @discord.ui.button(label="🚚 Segna come Consegnato", style=discord.ButtonStyle.secondary, custom_id="btn_consegnato")
+    async def segna_consegnato(self, interaction: discord.Interaction, button: discord.ui.Button):
+        conn = sqlite3.connect('ordini.db')
+        cursor = conn.cursor()
+        cursor.execute("UPDATE ordini SET status = 'Consegnato' WHERE id = ?", (self.order_id,))
+        conn.commit()
+        conn.close()
+        
+        button.label = "📦 Consegnato"
+        button.style = discord.ButtonStyle.success
+        button.disabled = True
+        await interaction.response.edit_message(view=self)
+        await interaction.followup.send(f"🚚 L'ordine **#{self.order_id}** è stato segnato come **CONSEGNATO**.", ephemeral=True)
 
 class ClaimModal(discord.ui.Modal, title="Conferma Preordine"):
     quantita = discord.ui.TextInput(
@@ -94,22 +134,25 @@ class ClaimModal(discord.ui.Modal, title="Conferma Preordine"):
             await interaction.response.send_message("❌ Inserisci un numero valido maggiore di 0.", ephemeral=True)
             return
 
-        save_order(interaction.user.id, interaction.user.name, self.product_name, self.price, qty)
+        order_id = save_order(interaction.user.id, interaction.user.name, self.product_name, self.price, qty)
 
         await interaction.response.send_message(
-            f"✅ **Ordine registrato con successo!**\n📦 Prodotto: {self.product_name}\n🔢 Quantità: {qty}\n💰 Prezzo unitario: {self.price}",
+            f"✅ **Ordine registrato con successo!** (ID: #{order_id})\n📦 Prodotto: {self.product_name}\n🔢 Quantità: {qty}\n💰 Prezzo unitario: {self.price}",
             ephemeral=True
         )
 
         admin_channel = bot.get_channel(CHANNEL_ADMIN_LOGS)
         if admin_channel:
-            embed = discord.Embed(title="🛒 Nuovo Claim Ricevuto!", color=discord.Color.green())
+            embed = discord.Embed(title=f"🛒 Nuovo Claim Ricevuto! (ID #{order_id})", color=discord.Color.gold())
             embed.add_field(name="Utente", value=f"{interaction.user.mention} ({interaction.user.name})", inline=False)
             embed.add_field(name="Prodotto", value=self.product_name, inline=False)
             embed.add_field(name="Quantità", value=str(qty), inline=True)
             embed.add_field(name="Prezzo Unitario", value=self.price, inline=True)
+            embed.add_field(name="Stato Attuale", value="⏳ `Ordinato`", inline=False)
             embed.timestamp = datetime.now()
-            await admin_channel.send(embed=embed)
+            
+            view = AdminActionView(order_id)
+            await admin_channel.send(embed=embed, view=view)
 
 class ClaimView(discord.ui.View):
     def __init__(self, product_name, price):
@@ -122,41 +165,28 @@ class ClaimView(discord.ui.View):
         modal = ClaimModal(self.product_name, self.price)
         await interaction.response.send_modal(modal)
 
-# 4. Logica di Smistamento Blindata con Debug
+# 4. Logica di Smistamento
 def get_discord_channel_id(text):
     if not text:
-        print("⚠️ [SMISTAMENTO] Testo vuoto -> Canale ALTRO", flush=True)
         return CHANNEL_ALTRO
     
-    print(f"🔍 [SMISTAMENTO] Testo letto: {text[:60]}...", flush=True)
-    
-    # Controllo rigoroso basato sulle tue maiuscole esatte
     if "#Pokemon" in text:
-        print("✅ [SMISTAMENTO] Rilevato #Pokemon -> Destinazione: POKEMON", flush=True)
         return CHANNEL_POKEMON
     elif "#OnePiece" in text:
-        print("✅ [SMISTAMENTO] Rilevato #OnePiece -> Destinazione: ONE PIECE", flush=True)
         return CHANNEL_ONEPIECE
     elif "#DragonBall" in text:
-        print("✅ [SMISTAMENTO] Rilevato #DragonBall -> Destinazione: DRAGON BALL", flush=True)
         return CHANNEL_DRAGONBALL
     elif "#Altro" in text:
-        print("✅ [SMISTAMENTO] Rilevato #Altro -> Destinazione: ALTRO", flush=True)
         return CHANNEL_ALTRO
     else:
-        # Fallback minuscolo per sicurezza
         text_lower = text.lower()
         if "#pokemon" in text_lower:
-            print("✅ [SMISTAMENTO] Rilevato (lowercase) #pokemon -> POKEMON", flush=True)
             return CHANNEL_POKEMON
         elif "#onepiece" in text_lower:
-            print("✅ [SMISTAMENTO] Rilevato (lowercase) #onepiece -> ONE PIECE", flush=True)
             return CHANNEL_ONEPIECE
         elif "#dragonball" in text_lower:
-            print("✅ [SMISTAMENTO] Rilevato (lowercase) #dragonball -> DRAGON BALL", flush=True)
             return CHANNEL_DRAGONBALL
         else:
-            print("⚠️ [SMISTAMENTO] Nessun hashtag corrispondente -> Canale ALTRO", flush=True)
             return CHANNEL_ALTRO
 
 def apply_markup(match):
@@ -211,6 +241,84 @@ def clean_message_text(text):
         
     return result, product_title, product_price
 
+# Task Giornaliera per il Recap degli Ordini (Esegue ogni giorno alle ore 09:00 UTC)
+@tasks.loop(time=time(hour=9, minute=0, tzinfo=timezone.utc))
+async def recap_giornaliero():
+    admin_channel = bot.get_channel(CHANNEL_ADMIN_LOGS)
+    if not admin_channel:
+        return
+
+    conn = sqlite3.connect('ordini.db')
+    cursor = conn.cursor()
+    # Prende gli ordini non ancora consegnati o gli ultimi attivi
+    cursor.execute("SELECT id, username, product_name, price, quantity, status, timestamp FROM ordini WHERE status != 'Consegnato' ORDER BY id DESC LIMIT 25")
+    rows = cursor.fetchall()
+    conn.close()
+
+    if not rows:
+        embed = discord.Embed(title="📊 Recap Giornaliero Ordini", description="Ottimo! Non ci sono ordini in sospeso (tutti consegnati).", color=discord.Color.green())
+        await admin_channel.send(embed=embed)
+        return
+
+    embed = discord.Embed(title="📊 Recap Giornaliero Ordini in Sospeso", color=discord.Color.orange(), timestamp=datetime.now())
+    for row in rows:
+        oid, username, product, price, qty, status, timestamp = row
+        status_icon = "⏳" if status == "Ordinato" else "💳"
+        embed.add_field(
+            name=f"ID #{oid} - {product} (x{qty})",
+            value=f"👤 {username} | 💰 {price}\nStato: {status_icon} **{status}** | 🕒 {timestamp}",
+            inline=False
+        )
+    await admin_channel.send(embed=embed)
+
+# Comandi Admin Gestione Ordini
+@bot.command(name="ordini")
+@commands.has_permissions(administrator=True)
+async def mostra_ordini(ctx, stato: str = None):
+    conn = sqlite3.connect('ordini.db')
+    cursor = conn.cursor()
+    
+    if stato:
+        cursor.execute('SELECT id, username, product_name, price, quantity, timestamp, status FROM ordini WHERE status LIKE ? ORDER BY id DESC LIMIT 15', (f"%{stato}%",))
+        title = f"📋 Ordini filtrati per: {stato.capitalize()}"
+    else:
+        cursor.execute('SELECT id, username, product_name, price, quantity, timestamp, status FROM ordini ORDER BY id DESC LIMIT 15')
+        title = "📋 Ultimi 15 Ordini Totali"
+        
+    rows = cursor.fetchall()
+    conn.close()
+
+    if not rows:
+        await ctx.send("📭 Nessun ordine trovato.")
+        return
+
+    embed = discord.Embed(title=title, color=discord.Color.blue())
+    for row in rows:
+        oid, username, product, price, qty, timestamp, current_status = row
+        icon = "⏳" if current_status == "Ordinato" else ("💳" if current_status == "Pagato" else "🚚")
+        embed.add_field(
+            name=f"ID #{oid} - {product} (x{qty})",
+            value=f"👤 **Utente:** {username}\n💰 **Prezzo:** {price}\n{icon} **Stato:** `{current_status}`\n🕒 {timestamp}",
+            inline=False
+        )
+    await ctx.send(embed=embed)
+
+@bot.command(name="stato")
+@commands.has_permissions(administrator=True)
+async def cambia_stato(ctx, order_id: int, nuovo_stato: str):
+    nuovo_stato_cap = nuovo_stato.capitalize()
+    if nuovo_stato_cap not in ["Ordinato", "Pagato", "Consegnato"]:
+        await ctx.send("❌ Stato non valido. Usa: `Ordinato`, `Pagato` o `Consegnato`.")
+        return
+
+    conn = sqlite3.connect('ordini.db')
+    cursor = conn.cursor()
+    cursor.execute("UPDATE ordini SET status = ? WHERE id = ?", (nuovo_stato_cap, order_id))
+    conn.commit()
+    conn.close()
+
+    await ctx.send(f"✅ L'ordine **#{order_id}** è stato aggiornato a: `{nuovo_stato_cap}`")
+
 # Avvio del client Telegram
 tg_client = TelegramClient('bot_session', API_ID, API_HASH)
 
@@ -225,7 +333,6 @@ async def album_handler(event):
     target_channel_id = get_discord_channel_id(text)
     channel = bot.get_channel(target_channel_id)
     if not channel:
-        print(f"❌ Canale Discord ID {target_channel_id} non trovato!", flush=True)
         return
 
     discord_files = []
@@ -249,7 +356,6 @@ async def album_handler(event):
     if cleaned:
         view = ClaimView(title, price)
         await channel.send(content=cleaned, view=view)
-        print(f"✨ [SUCCESSO] Album inviato nel canale #{channel.name}", flush=True)
 
 @tg_client.on(events.NewMessage(chats=TELEGRAM_CHANNEL))
 async def single_handler(event):
@@ -260,7 +366,6 @@ async def single_handler(event):
     target_channel_id = get_discord_channel_id(text)
     channel = bot.get_channel(target_channel_id)
     if not channel:
-        print(f"❌ Canale Discord ID {target_channel_id} non trovato!", flush=True)
         return
 
     cleaned, title, price = clean_message_text(text)
@@ -279,16 +384,16 @@ async def single_handler(event):
         if cleaned:
             view = ClaimView(title, price)
             await channel.send(content=cleaned, view=view)
-            print(f"✨ [SUCCESSO] Messaggio foto inviato nel canale #{channel.name}", flush=True)
     elif cleaned:
         view = ClaimView(title, price)
         await channel.send(content=cleaned, view=view)
-        print(f"✨ [SUCCESSO] Messaggio testo inviato nel canale #{channel.name}", flush=True)
 
 # 5. Avvio simultaneo
 @bot.event
 async def on_ready():
     print(f"Bot Discord connesso come {bot.user}", flush=True)
+    if not recap_giornaliero.is_running():
+        recap_giornaliero.start()
     await tg_client.start()
     print("Userbot Telegram avviato e in ascolto...", flush=True)
 
