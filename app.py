@@ -137,6 +137,7 @@ async def on_ready():
 # ================= AVVIAMENTO SISTEMA =================
 if __name__ == "__main__":
     import threading
+    import asyncio
     
     def run_discord():
         discord_client.run(DISCORD_TOKEN)
@@ -146,6 +147,10 @@ if __name__ == "__main__":
     
     print("🚀 Userbot Telegram avviato e in ascolto...", flush=True)
     
-    # Questo utilizza la sessione salvata in precedenza senza chiedere input da terminale
-    with client:
+    # Avvio sicuro di Telethon che non crasha su Render
+    loop = asyncio.get_event_loop()
+    try:
+        loop.run_until_complete(client.start())
         client.run_until_disconnected()
+    except Exception as e:
+        print(f"❌ Errore critico Telegram: {e}", flush=True)
