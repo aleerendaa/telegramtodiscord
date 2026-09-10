@@ -280,7 +280,6 @@ def apply_markup(match):
         return f"{price:.2f}".replace('.', ',') + " €"
     except ValueError:
         return match.group(0)
-
 def clean_message_text(text):
     if not text:
         return "", "", ""
@@ -303,10 +302,28 @@ def clean_message_text(text):
         if i == 0 and line_str:
             product_title = line_str
 
-        updated_line = re.sub(r'(\d+[\.,]\d{2})\s*€', apply_markup, line_str)
-        if "€" in updated_line and product_price == "N/D":
-            product_price = updated_line
+        # Cerca il prezzo prima di qualsiasi testo aggiuntivo (es. "· 93 disponibili")
+        price_match = re.search(r'(\d+[\.,]\d{2})\s*€', line_str)
+        if price_match and product_price == "N/D":
+            # Calcola il prezzo con il ricarico applicando la tua regola
+            price_str = price_match.group(1).replace(',', '.')
+            try:
+                price = float(price_str)
+                if 1 <= price < 15:
+                    price += 3
+                elif 15 <= price < 50:
+                    price += 5
+                elif 50 <= price < 150:
+                    price += 10
+                elif 150 <= price < 300:
+                    price += 20
+                elif price >= 300:
+                    price += 30
+                product_price = f"{price:.2f}".replace('.', ',') + " €"
+            except ValueError:
+                product_price = price_match.group(0)
 
+        updated_line = re.sub(r'(\d+[\.,]\d{2})\s*€', apply_markup, line_str)
         cleaned_lines.append(updated_line)
     
     result = "\n".join(cleaned_lines).strip()
