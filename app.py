@@ -149,5 +149,5 @@ if __name__ == "__main__":
     discord_thread.start()
     
     print("🚀 Userbot Telegram avviato e in ascolto...", flush=True)
-    client.start()
-    client.run_until_disconnected()
+    with client:
+        client.loop.run_until_disconnected()
