@@ -44,7 +44,7 @@ CHANNEL_ONEPIECE = 1532111869832069242
 CHANNEL_DRAGONBALL = 1532112469567471938
 CHANNEL_ALTRO = 1532112759490351244
 
-# Inizializzazione Database (con colonna total_price aggiunta)
+# Inizializzazione Database con aggiornamento sicuro della colonna
 def get_db_connection():
     if is_postgres:
         return psycopg2.connect(DATABASE_URL)
@@ -68,6 +68,12 @@ def init_db():
                 status TEXT DEFAULT 'Da pagare'
             )
         ''')
+        # Aggiunge la colonna total_price se la tabella esisteva già senza di essa
+        try:
+            cursor.execute('ALTER TABLE ordini ADD COLUMN total_price TEXT;')
+            conn.commit()
+        except Exception:
+            conn.rollback()
     else:
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS ordini (
@@ -82,7 +88,12 @@ def init_db():
                 status TEXT DEFAULT 'Da pagare'
             )
         ''')
-    conn.commit()
+        try:
+            cursor.execute('ALTER TABLE ordini ADD COLUMN total_price TEXT;')
+            conn.commit()
+        except Exception:
+            pass
+            
     cursor.close()
     conn.close()
 
@@ -148,10 +159,8 @@ class ClaimModal(discord.ui.Modal, title="Conferma Preordine"):
         except ValueError:
             total_str = "N/D"
 
-        # Salvataggio nel database con il totale incluso
         order_id = save_order(interaction.user.id, interaction.user.name, self.product_name, self.price, total_str, qty)
 
-        # Messaggio di conferma per l'utente
         await interaction.followup.send(
             f"✅ **Ordine registrato con successo!**\n\n"
             f"📦 **Prodotto:** {self.product_name}\n"
@@ -188,7 +197,6 @@ class ClaimView(discord.ui.View):
         modal = ClaimModal(self.product_name, self.price)
         await interaction.response.send_modal(modal)
 
-# Menu interattivo con Selezione Stato + Pulsante Elimina Ordine
 class StatusSelect(discord.ui.Select):
     def __init__(self, order_id):
         self.order_id = order_id
@@ -237,11 +245,11 @@ class OrderManagementView(discord.ui.View):
     def __init__(self, orders):
         super().__init__(timeout=180)
         options = []
-        for row in orders[:25]: # Max 25 per limite Discord
+        for row in orders[:25]:
             oid, username, product, price, total_price, qty, status, timestamp = row
             options.append(discord.SelectOption(
                 label=f"ID #{oid} - {product[:20]}",
-                description=f"Utente: {username} | Tot: {total_price} | Stato: {status}",
+                description=f"Utente: {username} | Tot: {total_price or 'N/D'} | Stato: {status}",
                 value=str(oid)
             ))
         
@@ -370,7 +378,6 @@ def clean_message_text(text):
         
     return result, product_title, product_price
 
-# Task Giornaliera per il Recap degli Ordini in Sospeso
 @tasks.loop(time=time(hour=9, minute=0, tzinfo=timezone.utc))
 async def recap_giornaliero():
     admin_channel = bot.get_channel(CHANNEL_ADMIN_LOGS)
@@ -395,12 +402,11 @@ async def recap_giornaliero():
         status_icon = "⏳" if status == "Da pagare" else ("💳" if status == "Pagato" else "🚚")
         embed.add_field(
             name=f"ID #{oid} - {product} (x{qty})",
-            value=f"👤 {username} | 💰 Unitario: {price} | 💵 **Totale: {total_price}**\nStato: {status_icon} **{status}** | 🕒 {timestamp}",
+            value=f"👤 {username} | 💰 Unitario: {price} | 💵 **Totale: {total_price or 'N/D'}**\nStato: {status_icon} **{status}** | 🕒 {timestamp}",
             inline=False
         )
     await admin_channel.send(embed=embed)
 
-# Comando Admin: !menu
 @bot.command(name="menu")
 @commands.has_permissions(administrator=True)
 async def menu_ordini(ctx):
@@ -423,7 +429,6 @@ async def menu_ordini(ctx):
     view = OrderManagementView(rows)
     await ctx.send(embed=embed, view=view)
 
-# Avvio del client Telegram
 tg_client = TelegramClient('bot_session', API_ID, API_HASH)
 
 @tg_client.on(events.Album(chats=TELEGRAM_CHANNEL))
@@ -492,7 +497,6 @@ async def single_handler(event):
         view = ClaimView(title, price)
         await channel.send(content=cleaned, view=view)
 
-# 5. Avvio simultaneo
 @bot.event
 async def on_ready():
     print(f"Bot Discord connesso come {bot.user}", flush=True)
