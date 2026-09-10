@@ -3,7 +3,7 @@ import threading
 import asyncio
 import re
 import sqlite3
-from datetime import datetime, time, timezone
+from datetime import datetime, time, timezone, date
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from telethon import TelegramClient, events
 import discord
@@ -23,13 +23,13 @@ def run_web():
 
 threading.Thread(target=run_web, daemon=True).start()
 
-# 2. Configurazione Credenziali e ID Canali Discord
+# 2. Configurazione Credenziali e ID Canali Discord Corretti
 API_ID = int(os.environ.get('API_ID', 0))
 API_HASH = os.environ.get('API_HASH', '')
 TELEGRAM_CHANNEL = "https://t.me/+tNa5JDiCTVQ1ZDk0"
 DISCORD_TOKEN = os.environ.get('DISCORD_TOKEN', '')
 
-# ID Canali Discord ufficiali
+# ID Canali Discord ufficiali (I tuoi ID esatti)
 CHANNEL_ADMIN_LOGS = 1533540767396794479
 CHANNEL_POKEMON = 1547376481477459988
 CHANNEL_ONEPIECE = 1532111869832069242
@@ -49,11 +49,11 @@ def init_db():
             price TEXT,
             quantity INTEGER,
             timestamp TEXT,
-            status TEXT DEFAULT 'Ordinato'
+            status TEXT DEFAULT 'Da pagare'
         )
     ''')
     try:
-        cursor.execute("ALTER TABLE ordini ADD COLUMN status TEXT DEFAULT 'Ordinato'")
+        cursor.execute("ALTER TABLE ordini ADD COLUMN status TEXT DEFAULT 'Da pagare'")
     except sqlite3.OperationalError:
         pass
     conn.commit()
@@ -66,7 +66,7 @@ def save_order(user_id, username, product_name, price, quantity):
     cursor = conn.cursor()
     cursor.execute('''
         INSERT INTO ordini (user_id, username, product_name, price, quantity, timestamp, status)
-        VALUES (?, ?, ?, ?, ?, ?, 'Ordinato')
+        VALUES (?, ?, ?, ?, ?, ?, 'Da pagare')
     ''', (str(user_id), str(username), product_name, price, int(quantity), datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
     order_id = cursor.lastrowid
     conn.commit()
@@ -77,39 +77,6 @@ def save_order(user_id, username, product_name, price, quantity):
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
-
-class AdminActionView(discord.ui.View):
-    def __init__(self, order_id):
-        super().__init__(timeout=None)
-        self.order_id = order_id
-
-    @discord.ui.button(label="💳 Segna come Pagato", style=discord.ButtonStyle.primary, custom_id="btn_pagato")
-    async def segna_pagato(self, interaction: discord.Interaction, button: discord.ui.Button):
-        conn = sqlite3.connect('ordini.db')
-        cursor = conn.cursor()
-        cursor.execute("UPDATE ordini SET status = 'Pagato' WHERE id = ?", (self.order_id,))
-        conn.commit()
-        conn.close()
-        
-        button.label = "✅ Pagato"
-        button.style = discord.ButtonStyle.success
-        button.disabled = True
-        await interaction.response.edit_message(view=self)
-        await interaction.followup.send(f"💳 L'ordine **#{self.order_id}** è stato segnato come **PAGATO**.", ephemeral=True)
-
-    @discord.ui.button(label="🚚 Segna come Consegnato", style=discord.ButtonStyle.secondary, custom_id="btn_consegnato")
-    async def segna_consegnato(self, interaction: discord.Interaction, button: discord.ui.Button):
-        conn = sqlite3.connect('ordini.db')
-        cursor = conn.cursor()
-        cursor.execute("UPDATE ordini SET status = 'Consegnato' WHERE id = ?", (self.order_id,))
-        conn.commit()
-        conn.close()
-        
-        button.label = "📦 Consegnato"
-        button.style = discord.ButtonStyle.success
-        button.disabled = True
-        await interaction.response.edit_message(view=self)
-        await interaction.followup.send(f"🚚 L'ordine **#{self.order_id}** è stato segnato come **CONSEGNATO**.", ephemeral=True)
 
 class ClaimModal(discord.ui.Modal, title="Conferma Preordine"):
     quantita = discord.ui.TextInput(
@@ -148,11 +115,11 @@ class ClaimModal(discord.ui.Modal, title="Conferma Preordine"):
             embed.add_field(name="Prodotto", value=self.product_name, inline=False)
             embed.add_field(name="Quantità", value=str(qty), inline=True)
             embed.add_field(name="Prezzo Unitario", value=self.price, inline=True)
-            embed.add_field(name="Stato Attuale", value="⏳ `Ordinato`", inline=False)
+            embed.add_field(name="Stato Attuale", value="⏳ `Da pagare`", inline=False)
             embed.timestamp = datetime.now()
             
-            view = AdminActionView(order_id)
-            await admin_channel.send(embed=embed, view=view)
+            # Nessun tasto inviato come richiesto
+            await admin_channel.send(embed=embed)
 
 class ClaimView(discord.ui.View):
     def __init__(self, product_name, price):
@@ -164,6 +131,51 @@ class ClaimView(discord.ui.View):
     async def claim_button_callback(self, interaction: discord.Interaction, button: discord.ui.Button):
         modal = ClaimModal(self.product_name, self.price)
         await interaction.response.send_modal(modal)
+
+# Menu interattivo per la gestione degli ordini
+class StatusSelect(discord.ui.Select):
+    def __init__(self, order_id):
+        self.order_id = order_id
+        options = [
+            discord.SelectOption(label="Da pagare", value="Da pagare", emoji="⏳", description="Imposta stato a Da pagare"),
+            discord.SelectOption(label="Pagato", value="Pagato", emoji="💳", description="Imposta stato a Pagato"),
+            discord.SelectOption(label="Consegnato", value="Consegnato", emoji="🚚", description="Imposta stato a Consegnato"),
+        ]
+        super().__init__(placeholder=f"Modifica stato ordine #{order_id}...", min_values=1, max_values=1, options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        nuovo_stato = self.values[0]
+        conn = sqlite3.connect('ordini.db')
+        cursor = conn.cursor()
+        cursor.execute("UPDATE ordini SET status = ? WHERE id = ?", (nuovo_stato, self.order_id))
+        conn.commit()
+        conn.close()
+
+        await interaction.response.send_message(f"✅ L'ordine **#{self.order_id}** è stato aggiornato a: **{nuovo_stato}**", ephemeral=True)
+
+class OrderSelectView(discord.ui.View):
+    def __init__(self, orders):
+        super().__init__(timeout=180)
+        # Aggiunge un menu a tendina con gli ordini trovati
+        options = []
+        for row in orders[:25]: # Max 25 per limite Discord
+            oid, username, product, price, qty, status, timestamp = row
+            options.append(discord.SelectOption(
+                label=f"ID #{oid} - {product[:20]}",
+                description=f"Utente: {username} | Stato: {status}",
+                value=str(oid)
+            ))
+        
+        class SelectOrder(discord.ui.Select):
+            def __init__(self, opts):
+                super().__init__(placeholder="Seleziona un ordine da modificare...", min_values=1, max_values=1, options=opts)
+            async def callback(self, inter: discord.Interaction):
+                selected_id = int(self.values[0])
+                view = discord.ui.View(timeout=60)
+                view.add_item(StatusSelect(selected_id))
+                await inter.response.send_message(f"Seleziona il nuovo stato per l'ordine **#{selected_id}**:", view=view, ephemeral=True)
+
+        self.add_item(SelectOrder(options))
 
 # 4. Logica di Smistamento
 def get_discord_channel_id(text):
@@ -262,7 +274,7 @@ async def recap_giornaliero():
     embed = discord.Embed(title="📊 Recap Giornaliero Ordini in Sospeso", color=discord.Color.orange(), timestamp=datetime.now())
     for row in rows:
         oid, username, product, price, qty, status, timestamp = row
-        status_icon = "⏳" if status == "Ordinato" else "💳"
+        status_icon = "⏳" if status == "Da pagare" else ("💳" if status == "Pagato" else "🚚")
         embed.add_field(
             name=f"ID #{oid} - {product} (x{qty})",
             value=f"👤 {username} | 💰 {price}\nStato: {status_icon} **{status}** | 🕒 {timestamp}",
@@ -270,16 +282,37 @@ async def recap_giornaliero():
         )
     await admin_channel.send(embed=embed)
 
-# Comandi Admin Gestione Ordini
+# Comandi Admin: Menu interattivo e gestione
+@bot.command(name="menu")
+@commands.has_permissions(administrator=True)
+async def menu_ordini(ctx):
+    conn = sqlite3.connect('ordini.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT id, username, product_name, price, quantity, status, timestamp FROM ordini ORDER BY id DESC LIMIT 25')
+    rows = cursor.fetchall()
+    conn.close()
+
+    if not rows:
+        await ctx.send("📭 Nessun ordine registrato nel database.")
+        return
+
+    embed = discord.Embed(title="📊 Menu Gestione Ordini", description="Usa il menu a tendina qui sotto per selezionare un ordine e modificarne lo stato in modo rapido.", color=discord.Color.blue())
+    view = OrderSelectView(rows)
+    await ctx.send(embed=embed, view=view)
+
 @bot.command(name="ordini")
 @commands.has_permissions(administrator=True)
-async def mostra_ordini(ctx, stato: str = None):
+async def mostra_ordini(ctx, filtro: str = None):
     conn = sqlite3.connect('ordini.db')
     cursor = conn.cursor()
     
-    if stato:
-        cursor.execute('SELECT id, username, product_name, price, quantity, timestamp, status FROM ordini WHERE status LIKE ? ORDER BY id DESC LIMIT 15', (f"%{stato}%",))
-        title = f"📋 Ordini filtrati per: {stato.capitalize()}"
+    if filtro and filtro.lower() == "oggi":
+        oggi_str = date.today().strftime("%Y-%m-%d")
+        cursor.execute('SELECT id, username, product_name, price, quantity, timestamp, status FROM ordini WHERE timestamp LIKE ? ORDER BY id DESC', (f"{oggi_str}%",))
+        title = "📋 Ordini di Oggi"
+    elif filtro:
+        cursor.execute('SELECT id, username, product_name, price, quantity, timestamp, status FROM ordini WHERE status LIKE ? ORDER BY id DESC LIMIT 15', (f"%{filtro}%",))
+        title = f"📋 Ordini filtrati per: {filtro.capitalize()}"
     else:
         cursor.execute('SELECT id, username, product_name, price, quantity, timestamp, status FROM ordini ORDER BY id DESC LIMIT 15')
         title = "📋 Ultimi 15 Ordini Totali"
@@ -294,7 +327,7 @@ async def mostra_ordini(ctx, stato: str = None):
     embed = discord.Embed(title=title, color=discord.Color.blue())
     for row in rows:
         oid, username, product, price, qty, timestamp, current_status = row
-        icon = "⏳" if current_status == "Ordinato" else ("💳" if current_status == "Pagato" else "🚚")
+        icon = "⏳" if current_status == "Da pagare" else ("💳" if current_status == "Pagato" else "🚚")
         embed.add_field(
             name=f"ID #{oid} - {product} (x{qty})",
             value=f"👤 **Utente:** {username}\n💰 **Prezzo:** {price}\n{icon} **Stato:** `{current_status}`\n🕒 {timestamp}",
@@ -304,10 +337,10 @@ async def mostra_ordini(ctx, stato: str = None):
 
 @bot.command(name="stato")
 @commands.has_permissions(administrator=True)
-async def cambia_stato(ctx, order_id: int, nuovo_stato: str):
+async def cambia_stato(ctx, order_id: int, *, nuovo_stato: str):
     nuovo_stato_cap = nuovo_stato.capitalize()
-    if nuovo_stato_cap not in ["Ordinato", "Pagato", "Consegnato"]:
-        await ctx.send("❌ Stato non valido. Usa: `Ordinato`, `Pagato` o `Consegnato`.")
+    if nuovo_stato_cap not in ["Da pagare", "Pagato", "Consegnato"]:
+        await ctx.send("❌ Stato non valido. Usa: `Da pagare`, `Pagato` o `Consegnato`.")
         return
 
     conn = sqlite3.connect('ordini.db')
@@ -390,7 +423,7 @@ async def single_handler(event):
 # 5. Avvio simultaneo
 @bot.event
 async def on_ready():
-    print(f"Bot Discord connesso come {bot.user}", flush=True)
+    print(f5f"Bot Discord connesso come {bot.user}", flush=True) if False else print(f"Bot Discord connesso come {bot.user}", flush=True)
     if not recap_giornaliero.is_running():
         recap_giornaliero.start()
     await tg_client.start()
