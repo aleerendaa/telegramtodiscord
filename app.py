@@ -302,10 +302,10 @@ def clean_message_text(text):
         if i == 0 and line_str:
             product_title = line_str
 
-        # Cerca il prezzo prima di qualsiasi testo aggiuntivo (es. "· 93 disponibili")
+        # Cerca il prezzo nella riga (es. "27,00 €" o "27.00 €") ignorando il resto
         price_match = re.search(r'(\d+[\.,]\d{2})\s*€', line_str)
-        if price_match and product_price == "N/D":
-            # Calcola il prezzo con il ricarico applicando la tua regola
+        if price_match:
+            # Se troviamo un prezzo valido e non abbiamo ancora un prezzo (o vogliamo l'ultimo valido della descrizione)
             price_str = price_match.group(1).replace(',', '.')
             try:
                 price = float(price_str)
@@ -319,9 +319,12 @@ def clean_message_text(text):
                     price += 20
                 elif price >= 300:
                     price += 30
-                product_price = f"{price:.2f}".replace('.', ',') + " €"
+                
+                calculated_price = f"{price:.2f}".replace('.', ',') + " €"
+                # Aggiorniamo il prezzo finché ne troviamo uno valido nel corpo del messaggio
+                product_price = calculated_price
             except ValueError:
-                product_price = price_match.group(0)
+                pass
 
         updated_line = re.sub(r'(\d+[\.,]\d{2})\s*€', apply_markup, line_str)
         cleaned_lines.append(updated_line)
