@@ -3,7 +3,6 @@ import threading
 import asyncio
 import re
 import sqlite3
-import os
 from datetime import datetime, time, timezone
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from telethon import TelegramClient, events
@@ -219,7 +218,6 @@ class OrderManagementView(discord.ui.View):
     @discord.ui.button(label="📥 Scarica Database Ordini", style=discord.ButtonStyle.secondary, emoji="📊", row=1)
     async def download_db_callback(self, interaction: discord.Interaction, button: discord.ui.Button):
         if is_postgres:
-            # Estrae i dati in formato file CSV o di testo per il download su Postgres
             conn = get_db_connection()
             cursor = conn.cursor()
             cursor.execute("SELECT id, user_id, username, product_name, price, quantity, timestamp, status FROM ordini ORDER BY id DESC")
@@ -324,10 +322,7 @@ async def recap_giornaliero():
 
     conn = get_db_connection()
     cursor = conn.cursor()
-    if is_postgres:
-        cursor.execute("SELECT id, username, product_name, price, quantity, status, timestamp FROM ordini WHERE status != 'Consegnato' ORDER BY id DESC LIMIT 25")
-    else:
-        cursor.execute("SELECT id, username, product_name, price, quantity, status, timestamp FROM ordini WHERE status != 'Consegnato' ORDER BY id DESC LIMIT 25")
+    cursor.execute("SELECT id, username, product_name, price, quantity, status, timestamp FROM ordini WHERE status != 'Consegnato' ORDER BY id DESC LIMIT 25")
     rows = cursor.fetchall()
     cursor.close()
     conn.close()
