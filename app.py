@@ -129,17 +129,21 @@ class ClaimModal(discord.ui.Modal, title="Conferma Preordine"):
         self.price = price
 
     async def on_submit(self, interaction: discord.Interaction):
+        # 1. Avvisiamo SUBITO Discord che stiamo elaborando (evita il timeout dei 3 secondi)
+        await interaction.response.defer(ephemeral=True)
+
         try:
             qty = int(self.quantita.value)
             if qty <= 0:
                 raise ValueError()
         except ValueError:
-            await interaction.response.send_message("❌ Inserisci un numero valido maggiore di 0.", ephemeral=True)
+            await interaction.followup.send("❌ Inserisci un numero valido maggiore di 0.", ephemeral=True)
             return
 
+        # 2. Salvataggio nel database (anche se Supabase è lento, Discord non andrà in errore)
         order_id = save_order(interaction.user.id, interaction.user.name, self.product_name, self.price, qty)
 
-        await interaction.response.send_message(
+        await interaction.followup.send(
             f"✅ **Ordine registrato con successo!** (ID: #{order_id})\n📦 Prodotto: {self.product_name}\n🔢 Quantità: {qty}\n💰 Prezzo unitario: {self.price}",
             ephemeral=True
         )
