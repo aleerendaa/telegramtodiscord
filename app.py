@@ -6,6 +6,7 @@ import sqlite3
 from datetime import datetime, time, timezone
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from telethon import TelegramClient, events
+from telethon.sessions import StringSession
 import discord
 from discord.ext import commands, tasks
 
@@ -34,6 +35,7 @@ threading.Thread(target=run_web, daemon=True).start()
 # 2. Configurazione Credenziali e ID Canali Discord
 API_ID = int(os.environ.get('API_ID', 0))
 API_HASH = os.environ.get('API_HASH', '')
+SESSION_STRING = os.environ.get('SESSION_STRING', '')
 TELEGRAM_CHANNEL = "https://t.me/+tNa5JDiCTVQ1ZDk0"
 DISCORD_TOKEN = os.environ.get('DISCORD_TOKEN', '')
 
@@ -306,7 +308,7 @@ def is_valid_product_message(text):
     
     text_lower = text.lower()
     
-    # 1. Deve contenere almeno un hashtag di categoria (se è un promemoria senza tag specifici di prodotto viene scartato)
+    # 1. Deve contenere almeno un hashtag di categoria
     has_category = any(tag in text_lower for tag in ["#pokemon", "#onepiece", "#dragonball", "#altro"])
     if not has_category:
         return False
@@ -437,8 +439,8 @@ async def menu_ordini(ctx):
     view = OrderManagementView(rows)
     await ctx.send(embed=embed, view=view)
 
-# Avvio del client Telegram con filtro anti-promemoria
-tg_client = TelegramClient('bot_session', API_ID, API_HASH)
+# Avvio del client Telegram con StringSession
+tg_client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
 
 @tg_client.on(events.Album(chats=TELEGRAM_CHANNEL))
 async def album_handler(event):
