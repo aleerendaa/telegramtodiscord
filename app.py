@@ -220,14 +220,16 @@ class OrderManagementView(discord.ui.View):
         if is_postgres:
             conn = get_db_connection()
             cursor = conn.cursor()
-            cursor.execute("SELECT id, user_id, username, product_name, price, quantity, timestamp, status FROM ordini ORDER BY id DESC")
+            # Estrazione ordinata: id, username, product_name, quantity, price, timestamp, status
+            cursor.execute("SELECT id, username, product_name, quantity, price, timestamp, status FROM ordini ORDER BY id DESC")
             rows = cursor.fetchall()
             cursor.close()
             conn.close()
 
-            csv_content = "ID,User ID,Username,Prodotto,Prezzo,Quantita,Timestamp,Stato\n"
+            # CSV formattato con separatore punto e virgola (;) e intestazioni corrette
+            csv_content = "ID;Username;Prodotto;Quantita;Prezzo Unitario;Timestamp;Stato\n"
             for r in rows:
-                csv_content += f"{r[0]},{r[1]},{r[2]},\"{r[3]}\",{r[4]},{r[5]},{r[6]},{r[7]}\n"
+                csv_content += f"{r[0]};{r[1]};\"{r[2]}\";{r[3]};{r[4]};{r[5]};{r[6]}\n"
             
             file_bytes = io.BytesIO(csv_content.encode('utf-8'))
             await interaction.response.send_message("Ecco il file di esportazione completo degli ordini:", file=discord.File(file_bytes, filename="ordini.csv"), ephemeral=True)
