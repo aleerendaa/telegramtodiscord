@@ -1,7 +1,6 @@
 import os
 import sqlite3
 import logging
-import asyncio
 from telethon import TelegramClient, events
 import discord
 from discord.ui import Button, View
@@ -14,7 +13,7 @@ API_ID = int(os.getenv("API_ID", "0"))
 API_HASH = os.getenv("API_HASH", "")
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN", "")
 
-# ================= ID CANALI DISCORD UFFICIALI (HARDCODED) =================
+# ================= ID CANALI DISCORD UFFICIALI =================
 CHANNEL_IDS = {
     "pokemon": 1547376481477459988,
     "onepiece": 1532111869832069242,
@@ -43,10 +42,8 @@ def init_db():
 init_db()
 
 # ================= SETUP CLIENTS =================
-# Telethon Userbot (usa la sessione salvata senza chiedere input)
 client = TelegramClient('session_name', API_ID, API_HASH)
 
-# Discord Client
 intents = discord.Intents.default()
 intents.messages = True
 intents.guilds = True
@@ -106,10 +103,8 @@ async def handle_telegram_message(event):
     message_text = event.raw_text
     logging.info(f"📩 [TELEGRAM] Messaggio intercettato: {message_text[:50]}...")
     
-    # 1. Determina l'ID di destinazione
     target_id = get_target_channel_id(message_text)
     
-    # 2. Recupera il canale da Discord
     channel = discord_client.get_channel(target_id)
     if not channel:
         try:
@@ -118,7 +113,6 @@ async def handle_telegram_message(event):
             logging.error(f"❌ [DISCORD] Impossibile trovare il canale ID {target_id}: {e}")
             return
             
-    # 3. Invia il messaggio con il bottone Claim
     try:
         view = ClaimView(item_description=message_text[:100])
         await channel.send(content=message_text, view=view)
@@ -131,29 +125,20 @@ async def handle_telegram_message(event):
 async def on_ready():
     logging.info(f"🤖 Bot Discord connesso come {discord_client.user}")
 
-# ================= MAIN ASINCRONO UNIFICATO =================
-async def main():
-    # Avvia Discord client in background
-    await discord_client.start(DISCORD_TOKEN)
-
+# ================= MAIN CON THREADING SICURO =================
 if __name__ == "__main__":
-    # Avvia Telethon e Discord in modo sicuro
-    loop = asyncio.get_event_loop()
+    import threading
     
-    # Connetti Telethon senza bloccare con l'input
-    client.connect()
-    if not client.is_user_authorized():
-        logging.error("❌ [TELEGRAM] Userbot non autorizzato! Controlla la sessione.")
-    else:
-        logging.info("🚀 [TELEGRAM] Userbot connesso e pronto!")
-
-    # Esegui i client in parallelo nel loop
-    try:
-        loop.run_until_complete(asyncio.gather(
-            discord_client.start(DISCORD_TOKEN),
-            client.run_until_disconnected()
-        ))
-    except KeyboardInterrupt:
-        logging.info("🛑 Arresto del sistema in corso...")
-    finally:
-        loop.close()
+    # Funzione per eseguire Discord in background
+    def run_discord():
+        discord_client.run(DISCORD_TOKEN)
+        
+    discord_thread = threading.Thread(target=run_discord)
+    discord_thread.start()
+    
+    logging.info("🚀 [TELEGRAM] Avvio userbot in corso...")
+    
+    # Utilizzo del context manager 'with client:' per gestire la connessione senza crashare
+    with client:
+        logging.info("✅ [TELEGRAM] Userbot connesso e in ascolto!")
+        client.run_until_disconnected()
