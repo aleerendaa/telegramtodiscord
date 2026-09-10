@@ -68,7 +68,6 @@ def init_db():
                 status TEXT DEFAULT 'Da pagare'
             )
         ''')
-        # Aggiunge la colonna total_price se la tabella esisteva già senza di essa
         try:
             cursor.execute('ALTER TABLE ordini ADD COLUMN total_price TEXT;')
             conn.commit()
@@ -151,7 +150,6 @@ class ClaimModal(discord.ui.Modal, title="Conferma Preordine"):
             await interaction.followup.send("❌ Inserisci un numero valido maggiore di 0.", ephemeral=True)
             return
 
-        # Calcolo del totale da pagare
         try:
             numeric_price = float(self.price.replace('€', '').strip().replace(',', '.'))
             total_price = numeric_price * qty
@@ -285,7 +283,7 @@ class OrderManagementView(discord.ui.View):
             else:
                 await interaction.response.send_message("❌ Database non trovato.", ephemeral=True)
 
-# 4. Logica di Smistamento e Markup
+# 4. Logica di Smistamento, Markup e Validazione Rigorosa
 def get_discord_channel_id(text):
     if not text:
         return CHANNEL_ALTRO
@@ -308,6 +306,24 @@ def get_discord_channel_id(text):
             return CHANNEL_DRAGONBALL
         else:
             return CHANNEL_ALTRO
+
+def is_valid_product_message(text):
+    if not text:
+        return False
+    
+    # 1. Deve contenere almeno un hashtag '#'
+    if "#" not in text:
+        return False
+        
+    # 2. Non deve contenere tag '@' (nessun utente menzionato)
+    if "@" in text:
+        return False
+        
+    # 3. Deve contenere un prezzo valido (es. numeri seguiti da €)
+    if not re.search(r'\d+[\.,]\d{2}\s*€', text):
+        return False
+        
+    return True
 
 def apply_markup(match):
     price_str = match.group(1).replace(',', '.')
@@ -429,6 +445,7 @@ async def menu_ordini(ctx):
     view = OrderManagementView(rows)
     await ctx.send(embed=embed, view=view)
 
+# Avvio del client Telegram con controlli severi sui messaggi idonei
 tg_client = TelegramClient('bot_session', API_ID, API_HASH)
 
 @tg_client.on(events.Album(chats=TELEGRAM_CHANNEL))
@@ -439,6 +456,10 @@ async def album_handler(event):
             text = message.raw_text
             break
     
+    # Controllo validità prodotto (Hashtag obbligatorio, NO '@', prezzo obbligatorio)
+    if not is_valid_product_message(text):
+        return
+
     target_channel_id = get_discord_channel_id(text)
     channel = bot.get_channel(target_channel_id)
     if not channel:
@@ -472,6 +493,11 @@ async def single_handler(event):
         return
         
     text = event.raw_text or ""
+    
+    # Controllo validità prodotto (Hashtag obbligatorio, NO '@', prezzo obbligatorio)
+    if not is_valid_product_message(text):
+        return
+
     target_channel_id = get_discord_channel_id(text)
     channel = bot.get_channel(target_channel_id)
     if not channel:
