@@ -6,21 +6,19 @@ import discord
 from discord.ui import Button, View
 
 # Configurazione logging
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logging.basicConfig(level=logging.INFO)
 
 # ================= CONFIGURAZIONE CREDENZIALI =================
-API_ID = int(os.getenv("API_ID", "0"))
-API_HASH = os.getenv("API_HASH", "")
-DISCORD_TOKEN = os.getenv("DISCORD_TOKEN", "")
+API_ID = int(os.getenv("API_ID", "IL_TUO_API_ID"))
+API_HASH = os.getenv("API_HASH", "IL_TUO_API_HASH")
+DISCORD_TOKEN = os.getenv("DISCORD_TOKEN", "IL_TUO_DISCORD_TOKEN")
 
 # ================= ID CANALI DISCORD UFFICIALI =================
-CHANNEL_IDS = {
-    "pokemon": 1547376481477459988,
-    "onepiece": 1532111869832069242,
-    "dragonball": 1532112469567471938,
-    "altro": 1532112759490351244,
-    "admin_logs": 1533540767396794479
-}
+CHANNEL_POKEMON = 1547376481477459988
+CHANNEL_ONEPIECE = 1532111869832069242
+CHANNEL_DRAGONBALL = 1532112469567471938
+CHANNEL_ALTRO = 1532112759490351244
+CHANNEL_ADMIN_LOGS = 1533540767396794479
 
 # ================= INIZIALIZZAZIONE DATABASE SQLITE =================
 def init_db():
@@ -41,7 +39,7 @@ def init_db():
 
 init_db()
 
-# ================= SETUP CLIENTS =================
+# ================= CONFIGURAZIONE CLIENT TELEGRAM & DISCORD =================
 client = TelegramClient('session_name', API_ID, API_HASH)
 
 intents = discord.Intents.default()
@@ -49,6 +47,28 @@ intents.messages = True
 intents.guilds = True
 intents.message_content = True
 discord_client = discord.Client(intents=intents)
+
+# ================= FUNZIONE DI SMISTAMENTO INTELLIGENTE =================
+def get_discord_channel_id(text):
+    if not text:
+        print("⚠️ [SMISTAMENTO] Testo vuoto -> Canale ALTRO", flush=True)
+        return CHANNEL_ALTRO
+    
+    text_lower = text.lower()
+    print(f"🔍 [SMISTAMENTO] Testo ricevuto: {text_lower}", flush=True)
+    
+    if "#pokemon" in text_lower:
+        print("✅ [SMISTAMENTO] Trovato #pokemon -> ID POKEMON", flush=True)
+        return CHANNEL_POKEMON
+    elif "#onepiece" in text_lower:
+        print("✅ [SMISTAMENTO] Trovato #onepiece -> ID ONE PIECE", flush=True)
+        return CHANNEL_ONEPIECE
+    elif "#dragonball" in text_lower:
+        print("✅ [SMISTAMENTO] Trovato #dragonball -> ID DRAGON BALL", flush=True)
+        return CHANNEL_DRAGONBALL
+    else:
+        print("⚠️ [SMISTAMENTO] Nessun hashtag corrispondente -> Canale ALTRO", flush=True)
+        return CHANNEL_ALTRO
 
 # ================= INTERFACCIA CLAIM DISCORD =================
 class ClaimView(View):
@@ -74,71 +94,58 @@ class ClaimView(View):
             await interaction.response.send_message(
                 f"✅ Claim registrato con successo per {interaction.user.mention}!", ephemeral=True
             )
-            logging.info(f"💾 [DATABASE] Salvato claim da {username} ({user_id})")
+            print(f"💾 [DATABASE] Salvato claim da {username} ({user_id})", flush=True)
+            
         except Exception as e:
-            logging.error(f"❌ [ERRORE DB] {e}")
+            print(f"❌ [ERRORE DB] {e}", flush=True)
             await interaction.response.send_message(
                 "❌ Si è verificato un errore durante la registrazione del claim.", ephemeral=True
             )
 
-# ================= LOGICA DI SMISTAMENTO =================
-def get_target_channel_id(text):
-    if not text:
-        return CHANNEL_IDS["altro"]
-    
-    text_lower = text.lower()
-    
-    if "#pokemon" in text_lower:
-        return CHANNEL_IDS["pokemon"]
-    elif "#onepiece" in text_lower:
-        return CHANNEL_IDS["onepiece"]
-    elif "#dragonball" in text_lower:
-        return CHANNEL_IDS["dragonball"]
-    else:
-        return CHANNEL_IDS["altro"]
-
-# ================= EVENTO RICEZIONE TELEGRAM =================
+# ================= ASCOLTO MESSAGGI TELEGRAM =================
 @client.on(events.NewMessage)
-async def handle_telegram_message(event):
+async def my_event_handler(event):
     message_text = event.raw_text
-    logging.info(f"📩 [TELEGRAM] Messaggio intercettato: {message_text[:50]}...")
+    print(f"\n--------------------------------------------------", flush=True)
+    print(f"📩 [TELEGRAM] Messaggio ricevuto!", flush=True)
     
-    target_id = get_target_channel_id(message_text)
+    target_channel_id = get_discord_channel_id(message_text)
     
-    channel = discord_client.get_channel(target_id)
+    channel = discord_client.get_channel(target_channel_id)
     if not channel:
         try:
-            channel = await discord_client.fetch_channel(target_id)
+            channel = await discord_client.fetch_channel(target_channel_id)
         except Exception as e:
-            logging.error(f"❌ [DISCORD] Impossibile trovare il canale ID {target_id}: {e}")
+            print(f"❌ [ERRORE] Impossibile trovare il canale su Discord: {e}", flush=True)
             return
-            
+
+    print(f"🎯 [INVIO] Destinazione canale: #{channel.name} (ID: {target_channel_id})", flush=True)
+    
     try:
         view = ClaimView(item_description=message_text[:100])
         await channel.send(content=message_text, view=view)
-        logging.info(f"✨ [DISCORD] Inoltrato con successo nel canale: #{channel.name} (ID: {target_id})")
+        print(f"✨ [SUCCESSO] Messaggio spedito correttamente!", flush=True)
     except Exception as e:
-        logging.error(f"❌ [DISCORD] Errore di invio: {e}")
+        print(f"❌ [ERRORE INVIO] {e}", flush=True)
+    print(f"--------------------------------------------------", flush=True)
 
-# ================= EVENTO PRONTEZZA DISCORD =================
+# ================= EVENTO AVVIO DISCORD =================
 @discord_client.event
 async def on_ready():
-    logging.info(f"🤖 Bot Discord connesso come {discord_client.user}")
+    print(f"🤖 Bot Discord connesso come {discord_client.user}", flush=True)
 
-# ================= MAIN CON THREADING SICURO =================
+# ================= AVVIAMENTO SISTEMA =================
 if __name__ == "__main__":
     import threading
     
-    # Funzione per eseguire Discord in background
     def run_discord():
         discord_client.run(DISCORD_TOKEN)
         
     discord_thread = threading.Thread(target=run_discord)
     discord_thread.start()
     
-    logging.info("🚀 [TELEGRAM] Avvio userbot in corso...")
+    print("🚀 Userbot Telegram avviato e in ascolto...", flush=True)
     
-    # Utilizzo del context manager 'with client:' per gestire la connessione senza crashare
+    # Questo utilizza la sessione salvata in precedenza senza chiedere input da terminale
     with client:
-        logging.info("✅ [TELEGRAM] Userbot connesso e in ascolto!")
         client.run_until_disconnected()
