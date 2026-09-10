@@ -156,35 +156,14 @@ class ClaimModal(discord.ui.Modal, title="Conferma Preordine"):
 
 class ClaimView(discord.ui.View):
     def __init__(self, product_name, price):
-        super().__init__(timeout=None)  # timeout=None fa sì che il pulsante non scada mai
+        super().__init__(timeout=None)
         self.product_name = product_name
         self.price = price
 
-    @discord.ui.button(label="🛒 CLAIM (1 Click)", style=discord.ButtonStyle.success, custom_id="claim_button_fast")
+    @discord.ui.button(label="🛒 CLAIM", style=discord.ButtonStyle.success, custom_id="claim_button")
     async def claim_button_callback(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Registra direttamente l'ordine con quantità 1 in modo istantaneo
-        qty = 1 
-        order_id = save_order(interaction.user.id, interaction.user.name, self.product_name, self.price, qty)
-
-        # Risposta immediata visibile solo all'utente
-        await interaction.response.send_message(
-            f"✅ **Preordine registrato con successo!** (ID: #{order_id})\n📦 Prodotto: {self.product_name}\n💰 Prezzo: {self.price}",
-            ephemeral=True
-        )
-
-        # Invia il log all'admin
-        admin_channel = bot.get_channel(CHANNEL_ADMIN_LOGS)
-        if admin_channel:
-            embed = discord.Embed(title=f"🛒 Nuovo Claim Ricevuto! (ID #{order_id})", color=discord.Color.gold())
-            embed.add_field(name="Utente", value=f"{interaction.user.mention} ({interaction.user.name})", inline=False)
-            embed.add_field(name="Prodotto", value=self.product_name, inline=False)
-            embed.add_field(name="Quantità", value=str(qty), inline=True)
-            embed.add_field(name="Prezzo Unitario", value=self.price, inline=True)
-            embed.add_field(name="Stato Attuale", value="⏳ `Ordinato`", inline=False)
-            embed.timestamp = datetime.now()
-            
-            view = AdminActionView(order_id)
-            await admin_channel.send(embed=embed, view=view)
+        modal = ClaimModal(self.product_name, self.price)
+        await interaction.response.send_modal(modal)
 
 # 4. Logica di Smistamento
 def get_discord_channel_id(text):
