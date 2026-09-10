@@ -24,12 +24,14 @@ def run_web():
 
 threading.Thread(target=run_web, daemon=True).start()
 
-# 2. Configurazione Credenziali e ID Canali Discord (ordinati correttamente)
+# 2. Configurazione Credenziali e ID Canali Discord corretti
 API_ID = int(os.environ.get('API_ID', 0))
 API_HASH = os.environ.get('API_HASH', '')
 TELEGRAM_CHANNEL = "https://t.me/+tNa5JDiCTVQ1ZDk0"
 
 DISCORD_TOKEN = os.environ.get('DISCORD_TOKEN', '')
+
+# ID corretti e associati in modo univoco
 CHANNEL_ADMIN_LOGS = 1547376481477459988
 CHANNEL_POKEMON = 1532111869832069242
 CHANNEL_ONEPIECE = 1532112469567471938
@@ -119,7 +121,7 @@ class ClaimModal(discord.ui.Modal, title="Conferma Preordine"):
 # View con il pulsante Claim
 class ClaimView(discord.ui.View):
     def __init__(self, product_name, price):
-        super().__init__(timeout=None) # Il pulsante non scade mai
+        super().__init__(timeout=None)
         self.product_name = product_name
         self.price = price
 
@@ -128,13 +130,14 @@ class ClaimView(discord.ui.View):
         modal = ClaimModal(self.product_name, self.price)
         await interaction.response.send_modal(modal)
 
-# 4. Logica Telegram & Smistamento Rigido
+# 4. Logica Telegram & Smistamento Rigido e Corretto
 def get_discord_channel_id(text):
     if not text:
         return CHANNEL_ALTRO
     
     text_lower = text.lower()
     
+    # Controlli mirati sugli hashtag
     if "#pokemon" in text_lower:
         return CHANNEL_POKEMON
     elif "#onepiece" in text_lower:
