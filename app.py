@@ -162,6 +162,7 @@ class ClaimView(discord.ui.View):
 
     @discord.ui.button(label="🛒 CLAIM", style=discord.ButtonStyle.success, custom_id="claim_button")
     async def claim_button_callback(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Apriamo il modale associato
         modal = ClaimModal(self.product_name, self.price)
         await interaction.response.send_modal(modal)
 
