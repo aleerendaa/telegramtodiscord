@@ -1,285 +1,151 @@
 import os
-import threading
-import asyncio
-import re
 import sqlite3
-from datetime import datetime
-from http.server import HTTPServer, BaseHTTPRequestHandler
+import logging
 from telethon import TelegramClient, events
-import requests
 import discord
-from discord.ext import commands
+from discord.ui import Button, View
 
-# 1. Server web finto per mantenere felice Render
-class SimpleHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"Bot is alive!")
+# Configurazione logging
+logging.basicConfig(level=logging.INFO)
 
-def run_web():
-    port = int(os.environ.get("PORT", 10000))
-    server = HTTPServer(("0.0.0.0", port), SimpleHandler)
-    server.serve_forever()
+# ================= CONFIGURAZIONE CREDENZIALI =================
+# Prese dalle variabili d'ambiente di Render o impostate qui
+API_ID = int(os.getenv("API_ID", "IL_TUO_API_ID"))
+API_HASH = os.getenv("API_HASH", "IL_TUO_API_HASH")
+TELEGRAM_CHANNEL_SOURCE = os.getenv("TELEGRAM_CHANNEL_SOURCE", "tuo_canale_origine") 
 
-threading.Thread(target=run_web, daemon=True).start()
+DISCORD_TOKEN = os.getenv("DISCORD_TOKEN", "IL_TUO_DISCORD_TOKEN")
 
-# 2. Configurazione Credenziali e ID Canali Discord (ordinati correttamente)
-API_ID = int(os.environ.get('API_ID', 0))
-API_HASH = os.environ.get('API_HASH', '')
-TELEGRAM_CHANNEL = "https://t.me/+tNa5JDiCTVQ1ZDk0"
-
-DISCORD_TOKEN = os.environ.get('DISCORD_TOKEN', '')
+# ================= ID CANALI DISCORD UFFICIALI =================
 CHANNEL_POKEMON = 1547376481477459988
 CHANNEL_ONEPIECE = 1532111869832069242
 CHANNEL_DRAGONBALL = 1532112469567471938
 CHANNEL_ALTRO = 1532112759490351244
 CHANNEL_ADMIN_LOGS = 1533540767396794479
 
-# Inizializzazione Database SQLite locale
+# ================= INIZIALIZZAZIONE DATABASE SQLITE =================
 def init_db():
-    conn = sqlite3.connect('ordini.db')
+    conn = sqlite3.connect("ordini.db")
     cursor = conn.cursor()
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS ordini (
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS claims (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id TEXT,
             username TEXT,
-            product_name TEXT,
-            price TEXT,
+            item_text TEXT,
             quantity INTEGER,
-            timestamp TEXT
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
         )
-    ''')
+    """)
     conn.commit()
     conn.close()
 
 init_db()
 
-# Funzione per salvare l'ordine nel database
-def save_order(user_id, username, product_name, price, quantity):
-    conn = sqlite3.connect('ordini.db')
-    cursor = conn.cursor()
-    cursor.execute('''
-        INSERT INTO ordini (user_id, username, product_name, price, quantity, timestamp)
-        VALUES (?, ?, ?, ?, ?, ?)
-    ''', (str(user_id), str(username), product_name, price, int(quantity), datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-    conn.commit()
-    conn.close()
+# ================= CONFIGURAZIONE CLIENT TELEGRAM & DISCORD =================
+# Telethon Client (Userbot)
+client = TelegramClient('session_name', API_ID, API_HASH)
 
-# 3. Configurazione Bot Discord con Intents
+# Discord Client & Intents
 intents = discord.Intents.default()
-intents.message_content = True
-bot = commands.Bot(command_prefix="!", intents=intents)
+intents.messages = True
+intents.guilds = True
+discord_client = discord.Client(intents=intents)
 
-# Modale per inserire la quantità quando si clicca "Claim"
-class ClaimModal(discord.ui.Modal, title="Conferma Preordine"):
-    quantita = discord.ui.TextInput(
-        label="Quantità desiderata",
-        placeholder="Es. 1, 2, 3...",
-        min_length=1,
-        max_length=3,
-        required=True
-    )
-
-    def __init__(self, product_name, price):
-        super().__init__()
-        self.product_name = product_name
-        self.price = price
-
-    async def on_submit(self, interaction: discord.Interaction):
-        try:
-            qty = int(self.quantita.value)
-            if qty <= 0:
-                raise ValueError()
-        except ValueError:
-            await interaction.response.send_message("❌ Inserisci un numero valido maggiore di 0.", ephemeral=True)
-            return
-
-        # Salva nel database SQLite
-        save_order(interaction.user.id, interaction.user.name, self.product_name, self.price, qty)
-
-        # Risposta privata all'utente
-        await interaction.response.send_message(
-            f"✅ **Ordine registrato con successo!**\n📦 Prodotto: {self.product_name}\n🔢 Quantità: {qty}\n💰 Prezzo unitario: {self.price}",
-            ephemeral=True
-        )
-
-        # Invia notifica nel canale admin
-        admin_channel = bot.get_channel(CHANNEL_ADMIN_LOGS)
-        if admin_channel:
-            embed = discord.Embed(title="🛒 Nuovo Claim Ricevuto!", color=discord.Color.green())
-            embed.add_field(name="Utente", value=f"{interaction.user.mention} ({interaction.user.name})", inline=False)
-            embed.add_field(name="Prodotto", value=self.product_name, inline=False)
-            embed.add_field(name="Quantità", value=str(qty), inline=True)
-            embed.add_field(name="Prezzo Unitario", value=self.price, inline=True)
-            embed.timestamp = datetime.now()
-            await admin_channel.send(embed=embed)
-
-# View con il pulsante Claim
-class ClaimView(discord.ui.View):
-    def __init__(self, product_name, price):
-        super().__init__(timeout=None) # Il pulsante non scade mai
-        self.product_name = product_name
-        self.price = price
-
-    @discord.ui.button(label="🛒 CLAIM", style=discord.ButtonStyle.success, custom_id="claim_button")
-    async def claim_button_callback(self, interaction: discord.Interaction, button: discord.ui.Button):
-        modal = ClaimModal(self.product_name, self.price)
-        await interaction.response.send_modal(modal)
-
-# 4. Logica Telegram & Smistamento Rigido
+# ================= FUNZIONE DI SMISTAMENTO INTELLIGENTE =================
 def get_discord_channel_id(text):
     if not text:
-        print("⚠️ [SMISTAMENTO] Testo vuoto o assente -> Assegnato a ALTRO", flush=True)
+        print("⚠️ [SMISTAMENTO] Testo vuoto o assente -> Canale ALTRO", flush=True)
         return CHANNEL_ALTRO
     
     text_lower = text.lower()
-    print(f"🔍 [SMISTAMENTO] Testo ricevuto: {text_lower}", flush=True)
+    print(f"🔍 [SMISTAMENTO] Testo letto: {text_lower}", flush=True)
     
     if "#pokemon" in text_lower:
-        print("✅ [SMISTAMENTO] Trovato #pokemon -> Canale POKEMON", flush=True)
+        print("✅ [SMISTAMENTO] Rilevato #pokemon -> ID POKEMON", flush=True)
         return CHANNEL_POKEMON
     elif "#onepiece" in text_lower:
-        print("✅ [SMISTAMENTO] Trovato #onepiece -> Canale ONE PIECE", flush=True)
+        print("✅ [SMISTAMENTO] Rilevato #onepiece -> ID ONE PIECE", flush=True)
         return CHANNEL_ONEPIECE
     elif "#dragonball" in text_lower:
-        print("✅ [SMISTAMENTO] Trovato #dragonball -> Canale DRAGON BALL", flush=True)
+        print("✅ [SMISTAMENTO] Rilevato #dragonball -> ID DRAGON BALL", flush=True)
         return CHANNEL_DRAGONBALL
     else:
-        print("⚠️ [SMISTAMENTO] Nessun hashtag corrispondente -> Canale ALTRO", flush=True)
+        print("⚠️ [SMISTAMENTO] Nessun hashtag valido -> ID ALTRO", flush=True)
         return CHANNEL_ALTRO
 
-def apply_markup(match):
-    price_str = match.group(1).replace(',', '.')
+# ================= INTERFACCIA CLAIM DISCORD =================
+class ClaimView(View):
+    def __init__(self, item_description):
+        super().__init__(timeout=None) # Persistent view
+        self.item_description = item_description
+
+    @discord.ui.button(label="CLAIM", style=discord.ButtonStyle.green, custom_id="claim_button")
+    async def claim_callback(self, interaction: discord.Interaction, button: Button):
+        user_id = str(interaction.user.id)
+        username = interaction.user.name
+        
+        # Salvataggio nel database SQLite
+        try:
+            conn = sqlite3.connect("ordini.db")
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT INTO claims (user_id, username, item_text, quantity) VALUES (?, ?, ?, ?)",
+                (user_id, username, self.item_description, 1)
+            )
+            conn.commit()
+            conn.close()
+            
+            await interaction.response.send_message(
+                f"✅ Claim registrato con successo per {interaction.user.mention}!", ephemeral=True
+            )
+            print(f"💾 [DATABASE] Salvato claim da {username} ({user_id})", flush=True)
+            
+        except Exception as e:
+            print(f"❌ [ERRORE DB] {e}", flush=True)
+            await interaction.response.send_message(
+                "❌ Si è verificato un errore durante la registrazione del claim.", ephemeral=True
+            )
+
+# ================= ASCOLTO MESSAGGI TELEGRAM =================
+@client.on(events.NewMessage)
+async def my_event_handler(event):
+    # Filtra opzionalmente per canale di origine se impostato, altrimenti legge tutto ciò a cui accede l'userbot
+    message_text = event.raw_text
+    print(f"\n📩 [TELEGRAM] Nuovo messaggio intercettato!", flush=True)
+    
+    # Calcola il canale di destinazione in base agli hashtag
+    target_channel_id = get_discord_channel_id(message_text)
+    print(f"🚀 [INVIO DISCORD] Pronto a inviare all'ID numerico: {target_channel_id}", flush=True)
+    
+    # Invio su Discord
     try:
-        price = float(price_str)
-        if 1 <= price < 15:
-            price += 3
-        elif 15 <= price < 50:
-            price += 5
-        elif 50 <= price < 150:
-            price += 10
-        elif 150 <= price < 300:
-            price += 20
-        elif price >= 300:
-            price += 30
-        return f"{price:.2f}".replace('.', ',') + " €"
-    except ValueError:
-        return match.group(0)
+        channel = discord_client.get_channel(target_channel_id)
+        if channel:
+            view = ClaimView(item_description=message_text[:100]) # Passa un'anteprima del testo
+            await channel.send(content=message_text, view=view)
+            print(f"✨ [DISCORD] Messaggio inoltrato con successo nel canale {target_channel_id}!", flush=True)
+        else:
+            print(f"❌ [ERRORE DISCORD] Canale con ID {target_channel_id} non trovato dal bot Discord!", flush=True)
+    except Exception as e:
+        print(f"❌ [ERRORE INVIO DISCORD] {e}", flush=True)
 
-def clean_message_text(text):
-    if not text:
-        return "", "", ""
-    
-    lines = text.split('\n')
-    cleaned_lines = []
-    product_title = "Prodotto Preorder"
-    product_price = "N/D"
-    
-    for i, line in enumerate(lines):
-        line_str = line.strip()
-        if (
-            "Per prenotare" in line_str or 
-            "/claim" in line_str or 
-            "Offerto da" in line_str or 
-            line_str.startswith("#")
-        ):
-            continue
-            
-        if i == 0 and line_str:
-            product_title = line_str
-
-        updated_line = re.sub(r'(\d+[\.,]\d{2})\s*€', apply_markup, line_str)
-        if "€" in updated_line and product_price == "N/D":
-            product_price = updated_line
-
-        cleaned_lines.append(updated_line)
-    
-    result = "\n".join(cleaned_lines).strip()
-    if result:
-        result = f"{result}\n──────────────────────────────"
-        
-    return result, product_title, product_price
-
-# Avvio del client Telegram
-tg_client = TelegramClient('bot_session', API_ID, API_HASH)
-
-@tg_client.on(events.Album(chats=TELEGRAM_CHANNEL))
-async def album_handler(event):
-    text = ""
-    for message in event.messages:
-        if message.raw_text:
-            text = message.raw_text
-            break
-    
-    target_channel_id = get_discord_channel_id(text)
-    channel = bot.get_channel(target_channel_id)
-    if not channel:
-        return
-
-    discord_files = []
-    for i, message in enumerate(event.messages):
-        if message.photo:
-            path = await message.download_media(file=f'temp_img_{i}.jpg')
-            if path:
-                discord_files.append(discord.File(path))
-    
-    cleaned, title, price = clean_message_text(text)
-
-    if discord_files:
-        await channel.send(files=discord_files)
-        await asyncio.sleep(1.5)
-        for f in discord_files:
-            try:
-                os.remove(f.fp.name)
-            except:
-                pass
-        
-    if cleaned:
-        view = ClaimView(title, price)
-        await channel.send(content=cleaned, view=view)
-
-@tg_client.on(events.NewMessage(chats=TELEGRAM_CHANNEL))
-async def single_handler(event):
-    if event.grouped_id:
-        return
-        
-    text = event.raw_text or ""
-    target_channel_id = get_discord_channel_id(text)
-    channel = bot.get_channel(target_channel_id)
-    if not channel:
-        return
-
-    cleaned, title, price = clean_message_text(text)
-    
-    if event.photo:
-        path = await event.download_media(file='temp_single.jpg')
-        if path:
-            file = discord.File(path)
-            await channel.send(file=file)
-            await asyncio.sleep(1.5)
-            try:
-                os.remove(path)
-            except:
-                pass
-            
-        if cleaned:
-            view = ClaimView(title, price)
-            await channel.send(content=cleaned, view=view)
-    elif cleaned:
-        view = ClaimView(title, price)
-        await channel.send(content=cleaned, view=view)
-
-# 5. Avvio simultaneo di Telegram e Discord
-@bot.event
+# ================= EVENTO AVVIO DISCORD =================
+@discord_client.event
 async def on_ready():
-    print(f"Bot Discord connesso come {bot.user}")
-    await tg_client.start()
-    print("Userbot Telegram avviato e in ascolto...")
+    print(f"🤖 Bot Discord connesso come {discord_client.user}", flush=True)
 
+# ================= AVVIAMENTO SISTEMA =================
 if __name__ == "__main__":
-    if not DISCORD_TOKEN:
-        print("Errore: DISCORD_TOKEN non trovato nelle variabili d'ambiente!")
-    else:
-        bot.run(DISCORD_TOKEN)
+    import threading
+    
+    # Avvia Discord in un thread separato per far coesistere Telethon e Discord.py
+    def run_discord():
+        discord_client.run(DISCORD_TOKEN)
+        
+    discord_thread = threading.Thread(target=run_discord)
+    discord_thread.start()
+    
+    print("🚀 Userbot Telegram avviato e in ascolto...", flush=True)
+    client.start()
+    client.run_until_disconnected()
