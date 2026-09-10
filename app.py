@@ -156,7 +156,6 @@ class StatusSelect(discord.ui.Select):
 class OrderSelectView(discord.ui.View):
     def __init__(self, orders):
         super().__init__(timeout=180)
-        # Aggiunge un menu a tendina con gli ordini trovati
         options = []
         for row in orders[:25]: # Max 25 per limite Discord
             oid, username, product, price, qty, status, timestamp = row
@@ -423,7 +422,7 @@ async def single_handler(event):
 # 5. Avvio simultaneo
 @bot.event
 async def on_ready():
-    print(f5f"Bot Discord connesso come {bot.user}", flush=True) if False else print(f"Bot Discord connesso come {bot.user}", flush=True)
+    print(f"Bot Discord connesso come {bot.user}", flush=True)
     if not recap_giornaliero.is_running():
         recap_giornaliero.start()
     await tg_client.start()
