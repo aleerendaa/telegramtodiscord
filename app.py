@@ -131,21 +131,39 @@ class ClaimView(discord.ui.View):
         await interaction.response.send_modal(modal)
 
 # 4. Logica Telegram & Smistamento Rigido e Corretto
+# 4. Logica Telegram & Smistamento con hashtag esatti
 def get_discord_channel_id(text):
     if not text:
+        print("⚠️ [SMISTAMENTO] Testo vuoto -> Canale ALTRO", flush=True)
         return CHANNEL_ALTRO
     
-    text_lower = text.lower()
+    print(f"🔍 [SMISTAMENTO] Testo letto: {text[:60]}...", flush=True)
     
-    # Controlli mirati sugli hashtag
-    if "#pokemon" in text_lower:
+    # Controllo esatto basato sui tuoi hashtag con le maiuscole
+    if "#Pokemon" in text:
+        print("✅ [SMISTAMENTO] Trovato #Pokemon -> Invio su CANALE POKEMON", flush=True)
         return CHANNEL_POKEMON
-    elif "#onepiece" in text_lower:
+    elif "#OnePiece" in text:
+        print("✅ [SMISTAMENTO] Trovato #OnePiece -> Invio su CANALE ONE PIECE", flush=True)
         return CHANNEL_ONEPIECE
-    elif "#dragonball" in text_lower:
+    elif "#DragonBall" in text:
+        print("✅ [SMISTAMENTO] Trovato #DragonBall -> Invio su CANALE DRAGON BALL", flush=True)
         return CHANNEL_DRAGONBALL
-    else:
+    elif "#Altro" in text:
+        print("✅ [SMISTAMENTO] Trovato #Altro -> Invio su CANALE ALTRO", flush=True)
         return CHANNEL_ALTRO
+    else:
+        # Fallback di sicurezza: prova comunque a cercarli in minuscolo per qualsiasi evenienza
+        text_lower = text.lower()
+        if "#pokemon" in text_lower:
+            return CHANNEL_POKEMON
+        elif "#onepiece" in text_lower:
+            return CHANNEL_ONEPIECE
+        elif "#dragonball" in text_lower:
+            return CHANNEL_DRAGONBALL
+        else:
+            print("⚠️ [SMISTAMENTO] Nessun hashtag corrispondente -> Canale ALTRO", flush=True)
+            return CHANNEL_ALTRO
 
 def apply_markup(match):
     price_str = match.group(1).replace(',', '.')
