@@ -3,7 +3,7 @@ import threading
 import asyncio
 import re
 import sqlite3
-from datetime import datetime, time, timezone, date
+from datetime import datetime, time, timezone
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from telethon import TelegramClient, events
 import discord
@@ -23,13 +23,13 @@ def run_web():
 
 threading.Thread(target=run_web, daemon=True).start()
 
-# 2. Configurazione Credenziali e ID Canali Discord Corretti
+# 2. Configurazione Credenziali e ID Canali Discord
 API_ID = int(os.environ.get('API_ID', 0))
 API_HASH = os.environ.get('API_HASH', '')
 TELEGRAM_CHANNEL = "https://t.me/+tNa5JDiCTVQ1ZDk0"
 DISCORD_TOKEN = os.environ.get('DISCORD_TOKEN', '')
 
-# ID Canali Discord ufficiali (I tuoi ID esatti)
+# ID Canali Discord ufficiali
 CHANNEL_ADMIN_LOGS = 1533540767396794479
 CHANNEL_POKEMON = 1547376481477459988
 CHANNEL_ONEPIECE = 1532111869832069242
@@ -118,7 +118,6 @@ class ClaimModal(discord.ui.Modal, title="Conferma Preordine"):
             embed.add_field(name="Stato Attuale", value="⏳ `Da pagare`", inline=False)
             embed.timestamp = datetime.now()
             
-            # Nessun tasto inviato come richiesto
             await admin_channel.send(embed=embed)
 
 class ClaimView(discord.ui.View):
@@ -132,7 +131,7 @@ class ClaimView(discord.ui.View):
         modal = ClaimModal(self.product_name, self.price)
         await interaction.response.send_modal(modal)
 
-# Menu interattivo per la gestione degli ordini
+# Menu interattivo con Selezione Stato + Pulsante Download Database
 class StatusSelect(discord.ui.Select):
     def __init__(self, order_id):
         self.order_id = order_id
@@ -153,7 +152,7 @@ class StatusSelect(discord.ui.Select):
 
         await interaction.response.send_message(f"✅ L'ordine **#{self.order_id}** è stato aggiornato a: **{nuovo_stato}**", ephemeral=True)
 
-class OrderSelectView(discord.ui.View):
+class OrderManagementView(discord.ui.View):
     def __init__(self, orders):
         super().__init__(timeout=180)
         options = []
@@ -176,7 +175,14 @@ class OrderSelectView(discord.ui.View):
 
         self.add_item(SelectOrder(options))
 
-# 4. Logica di Smistamento
+    @discord.ui.button(label="📥 Scarica Database Ordini", style=discord.ButtonStyle.secondary, emoji="📊", row=1)
+    async def download_db_callback(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if os.path.exists("ordini.db"):
+            await interaction.response.send_message("Ecco il file completo del database con tutti gli ordini registrati:", file=discord.File("ordini.db"), ephemeral=True)
+        else:
+            await interaction.response.send_message("❌ Database non trovato.", ephemeral=True)
+
+# 4. Logica di Smistamento e Markup
 def get_discord_channel_id(text):
     if not text:
         return CHANNEL_ALTRO
@@ -252,7 +258,7 @@ def clean_message_text(text):
         
     return result, product_title, product_price
 
-# Task Giornaliera per il Recap degli Ordini (Esegue ogni giorno alle ore 09:00 UTC)
+# Task Giornaliera per il Recap degli Ordini in Sospeso
 @tasks.loop(time=time(hour=9, minute=0, tzinfo=timezone.utc))
 async def recap_giornaliero():
     admin_channel = bot.get_channel(CHANNEL_ADMIN_LOGS)
@@ -281,7 +287,7 @@ async def recap_giornaliero():
         )
     await admin_channel.send(embed=embed)
 
-# Comandi Admin: Menu interattivo e gestione
+# Unico comando Admin attivo: !menu
 @bot.command(name="menu")
 @commands.has_permissions(administrator=True)
 async def menu_ordini(ctx):
@@ -295,60 +301,13 @@ async def menu_ordini(ctx):
         await ctx.send("📭 Nessun ordine registrato nel database.")
         return
 
-    embed = discord.Embed(title="📊 Menu Gestione Ordini", description="Usa il menu a tendina qui sotto per selezionare un ordine e modificarne lo stato in modo rapido.", color=discord.Color.blue())
-    view = OrderSelectView(rows)
+    embed = discord.Embed(
+        title="📊 Menu Gestione Ordini", 
+        description="Usa il menu a tendina per modificare lo stato di un ordine o clicca sul pulsante sottostante per scaricare il file completo del database.", 
+        color=discord.Color.blue()
+    )
+    view = OrderManagementView(rows)
     await ctx.send(embed=embed, view=view)
-
-@bot.command(name="ordini")
-@commands.has_permissions(administrator=True)
-async def mostra_ordini(ctx, filtro: str = None):
-    conn = sqlite3.connect('ordini.db')
-    cursor = conn.cursor()
-    
-    if filtro and filtro.lower() == "oggi":
-        oggi_str = date.today().strftime("%Y-%m-%d")
-        cursor.execute('SELECT id, username, product_name, price, quantity, timestamp, status FROM ordini WHERE timestamp LIKE ? ORDER BY id DESC', (f"{oggi_str}%",))
-        title = "📋 Ordini di Oggi"
-    elif filtro:
-        cursor.execute('SELECT id, username, product_name, price, quantity, timestamp, status FROM ordini WHERE status LIKE ? ORDER BY id DESC LIMIT 15', (f"%{filtro}%",))
-        title = f"📋 Ordini filtrati per: {filtro.capitalize()}"
-    else:
-        cursor.execute('SELECT id, username, product_name, price, quantity, timestamp, status FROM ordini ORDER BY id DESC LIMIT 15')
-        title = "📋 Ultimi 15 Ordini Totali"
-        
-    rows = cursor.fetchall()
-    conn.close()
-
-    if not rows:
-        await ctx.send("📭 Nessun ordine trovato.")
-        return
-
-    embed = discord.Embed(title=title, color=discord.Color.blue())
-    for row in rows:
-        oid, username, product, price, qty, timestamp, current_status = row
-        icon = "⏳" if current_status == "Da pagare" else ("💳" if current_status == "Pagato" else "🚚")
-        embed.add_field(
-            name=f"ID #{oid} - {product} (x{qty})",
-            value=f"👤 **Utente:** {username}\n💰 **Prezzo:** {price}\n{icon} **Stato:** `{current_status}`\n🕒 {timestamp}",
-            inline=False
-        )
-    await ctx.send(embed=embed)
-
-@bot.command(name="stato")
-@commands.has_permissions(administrator=True)
-async def cambia_stato(ctx, order_id: int, *, nuovo_stato: str):
-    nuovo_stato_cap = nuovo_stato.capitalize()
-    if nuovo_stato_cap not in ["Da pagare", "Pagato", "Consegnato"]:
-        await ctx.send("❌ Stato non valido. Usa: `Da pagare`, `Pagato` o `Consegnato`.")
-        return
-
-    conn = sqlite3.connect('ordini.db')
-    cursor = conn.cursor()
-    cursor.execute("UPDATE ordini SET status = ? WHERE id = ?", (nuovo_stato_cap, order_id))
-    conn.commit()
-    conn.close()
-
-    await ctx.send(f"✅ L'ordine **#{order_id}** è stato aggiornato a: `{nuovo_stato_cap}`")
 
 # Avvio del client Telegram
 tg_client = TelegramClient('bot_session', API_ID, API_HASH)
