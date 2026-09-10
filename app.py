@@ -6,11 +6,10 @@ import sqlite3
 from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from telethon import TelegramClient, events
-import requests
 import discord
 from discord.ext import commands
 
-# 1. Server web finto per mantenere felice Render
+# 1. Server web per Render
 class SimpleHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -24,14 +23,13 @@ def run_web():
 
 threading.Thread(target=run_web, daemon=True).start()
 
-# 2. Configurazione Credenziali e ID Canali Discord corretti
+# 2. Configurazione Credenziali e ID Canali Discord
 API_ID = int(os.environ.get('API_ID', 0))
 API_HASH = os.environ.get('API_HASH', '')
 TELEGRAM_CHANNEL = "https://t.me/+tNa5JDiCTVQ1ZDk0"
-
 DISCORD_TOKEN = os.environ.get('DISCORD_TOKEN', '')
 
-# ID corretti e associati in modo univoco
+# ID Canali Discord ufficiali
 CHANNEL_ADMIN_LOGS = 1547376481477459988
 CHANNEL_POKEMON = 1532111869832069242
 CHANNEL_ONEPIECE = 1532112469567471938
@@ -58,7 +56,6 @@ def init_db():
 
 init_db()
 
-# Funzione per salvare l'ordine nel database
 def save_order(user_id, username, product_name, price, quantity):
     conn = sqlite3.connect('ordini.db')
     cursor = conn.cursor()
@@ -69,12 +66,11 @@ def save_order(user_id, username, product_name, price, quantity):
     conn.commit()
     conn.close()
 
-# 3. Configurazione Bot Discord con Intents
+# 3. Configurazione Bot Discord
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# Modale per inserire la quantità quando si clicca "Claim"
 class ClaimModal(discord.ui.Modal, title="Conferma Preordine"):
     quantita = discord.ui.TextInput(
         label="Quantità desiderata",
@@ -98,16 +94,13 @@ class ClaimModal(discord.ui.Modal, title="Conferma Preordine"):
             await interaction.response.send_message("❌ Inserisci un numero valido maggiore di 0.", ephemeral=True)
             return
 
-        # Salva nel database SQLite
         save_order(interaction.user.id, interaction.user.name, self.product_name, self.price, qty)
 
-        # Risposta privata all'utente
         await interaction.response.send_message(
             f"✅ **Ordine registrato con successo!**\n📦 Prodotto: {self.product_name}\n🔢 Quantità: {qty}\n💰 Prezzo unitario: {self.price}",
             ephemeral=True
         )
 
-        # Invia notifica nel canale admin
         admin_channel = bot.get_channel(CHANNEL_ADMIN_LOGS)
         if admin_channel:
             embed = discord.Embed(title="🛒 Nuovo Claim Ricevuto!", color=discord.Color.green())
@@ -118,7 +111,6 @@ class ClaimModal(discord.ui.Modal, title="Conferma Preordine"):
             embed.timestamp = datetime.now()
             await admin_channel.send(embed=embed)
 
-# View con il pulsante Claim
 class ClaimView(discord.ui.View):
     def __init__(self, product_name, price):
         super().__init__(timeout=None)
@@ -130,8 +122,7 @@ class ClaimView(discord.ui.View):
         modal = ClaimModal(self.product_name, self.price)
         await interaction.response.send_modal(modal)
 
-# 4. Logica Telegram & Smistamento Rigido e Corretto
-# 4. Logica Telegram & Smistamento con hashtag esatti
+# 4. Logica di Smistamento Blindata con Debug
 def get_discord_channel_id(text):
     if not text:
         print("⚠️ [SMISTAMENTO] Testo vuoto -> Canale ALTRO", flush=True)
@@ -139,27 +130,30 @@ def get_discord_channel_id(text):
     
     print(f"🔍 [SMISTAMENTO] Testo letto: {text[:60]}...", flush=True)
     
-    # Controllo esatto basato sui tuoi hashtag con le maiuscole
+    # Controllo rigoroso basato sulle tue maiuscole esatte
     if "#Pokemon" in text:
-        print("✅ [SMISTAMENTO] Trovato #Pokemon -> Invio su CANALE POKEMON", flush=True)
+        print("✅ [SMISTAMENTO] Rilevato #Pokemon -> Destinazione: POKEMON", flush=True)
         return CHANNEL_POKEMON
     elif "#OnePiece" in text:
-        print("✅ [SMISTAMENTO] Trovato #OnePiece -> Invio su CANALE ONE PIECE", flush=True)
+        print("✅ [SMISTAMENTO] Rilevato #OnePiece -> Destinazione: ONE PIECE", flush=True)
         return CHANNEL_ONEPIECE
     elif "#DragonBall" in text:
-        print("✅ [SMISTAMENTO] Trovato #DragonBall -> Invio su CANALE DRAGON BALL", flush=True)
+        print("✅ [SMISTAMENTO] Rilevato #DragonBall -> Destinazione: DRAGON BALL", flush=True)
         return CHANNEL_DRAGONBALL
     elif "#Altro" in text:
-        print("✅ [SMISTAMENTO] Trovato #Altro -> Invio su CANALE ALTRO", flush=True)
+        print("✅ [SMISTAMENTO] Rilevato #Altro -> Destinazione: ALTRO", flush=True)
         return CHANNEL_ALTRO
     else:
-        # Fallback di sicurezza: prova comunque a cercarli in minuscolo per qualsiasi evenienza
+        # Fallback minuscolo per sicurezza
         text_lower = text.lower()
         if "#pokemon" in text_lower:
+            print("✅ [SMISTAMENTO] Rilevato (lowercase) #pokemon -> POKEMON", flush=True)
             return CHANNEL_POKEMON
         elif "#onepiece" in text_lower:
+            print("✅ [SMISTAMENTO] Rilevato (lowercase) #onepiece -> ONE PIECE", flush=True)
             return CHANNEL_ONEPIECE
         elif "#dragonball" in text_lower:
+            print("✅ [SMISTAMENTO] Rilevato (lowercase) #dragonball -> DRAGON BALL", flush=True)
             return CHANNEL_DRAGONBALL
         else:
             print("⚠️ [SMISTAMENTO] Nessun hashtag corrispondente -> Canale ALTRO", flush=True)
@@ -231,6 +225,7 @@ async def album_handler(event):
     target_channel_id = get_discord_channel_id(text)
     channel = bot.get_channel(target_channel_id)
     if not channel:
+        print(f"❌ Canale Discord ID {target_channel_id} non trovato!", flush=True)
         return
 
     discord_files = []
@@ -254,6 +249,7 @@ async def album_handler(event):
     if cleaned:
         view = ClaimView(title, price)
         await channel.send(content=cleaned, view=view)
+        print(f"✨ [SUCCESSO] Album inviato nel canale #{channel.name}", flush=True)
 
 @tg_client.on(events.NewMessage(chats=TELEGRAM_CHANNEL))
 async def single_handler(event):
@@ -264,6 +260,7 @@ async def single_handler(event):
     target_channel_id = get_discord_channel_id(text)
     channel = bot.get_channel(target_channel_id)
     if not channel:
+        print(f"❌ Canale Discord ID {target_channel_id} non trovato!", flush=True)
         return
 
     cleaned, title, price = clean_message_text(text)
@@ -282,19 +279,21 @@ async def single_handler(event):
         if cleaned:
             view = ClaimView(title, price)
             await channel.send(content=cleaned, view=view)
+            print(f"✨ [SUCCESSO] Messaggio foto inviato nel canale #{channel.name}", flush=True)
     elif cleaned:
         view = ClaimView(title, price)
         await channel.send(content=cleaned, view=view)
+        print(f"✨ [SUCCESSO] Messaggio testo inviato nel canale #{channel.name}", flush=True)
 
-# 5. Avvio simultaneo di Telegram e Discord
+# 5. Avvio simultaneo
 @bot.event
 async def on_ready():
-    print(f"Bot Discord connesso come {bot.user}")
+    print(f"Bot Discord connesso come {bot.user}", flush=True)
     await tg_client.start()
-    print("Userbot Telegram avviato e in ascolto...")
+    print("Userbot Telegram avviato e in ascolto...", flush=True)
 
 if __name__ == "__main__":
     if not DISCORD_TOKEN:
-        print("Errore: DISCORD_TOKEN non trovato nelle variabili d'ambiente!")
+        print("Errore: DISCORD_TOKEN non trovato nelle variabili d'ambiente!", flush=True)
     else:
         bot.run(DISCORD_TOKEN)
