@@ -285,7 +285,7 @@ class OrderManagementView(discord.ui.View):
             else:
                 await interaction.response.send_message("❌ Database non trovato.", ephemeral=True)
 
-# 4. Logica di Smistamento, Markup e Validazione mirata anti-promemoria
+# 4. Logica di Smistamento, Markup e Validazione generica con hashtag
 def get_discord_channel_id(text):
     if not text:
         return CHANNEL_ALTRO
@@ -297,8 +297,6 @@ def get_discord_channel_id(text):
         return CHANNEL_ONEPIECE
     elif "#dragonball" in text_lower:
         return CHANNEL_DRAGONBALL
-    elif "#altro" in text_lower:
-        return CHANNEL_ALTRO
     else:
         return CHANNEL_ALTRO
 
@@ -308,12 +306,12 @@ def is_valid_product_message(text):
     
     text_lower = text.lower()
     
-    # 1. Deve contenere almeno un hashtag di categoria
-    has_category = any(tag in text_lower for tag in ["#pokemon", "#onepiece", "#dragonball", "#altro"])
-    if not has_category:
+    # 1. Accetta qualsiasi messaggio che contenga almeno un hashtag (es. #gundam, #altro, ecc.)
+    has_hashtag = bool(re.search(r'#\w+', text_lower))
+    if not has_hashtag:
         return False
         
-    # 2. Deve contenere obbligatoriamente un prezzo in euro (es. 22,00 €)
+    # 2. Deve contenere obbligatoriamente un prezzo in euro (es. 140,00 €)
     if not re.search(r'\d+[\.,]\d{2}\s*€', text):
         return False
         
