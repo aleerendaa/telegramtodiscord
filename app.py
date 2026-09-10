@@ -133,12 +133,15 @@ class ClaimView(discord.ui.View):
 def get_discord_channel_id(text):
     if not text:
         return CHANNEL_ALTRO
+    
     text_lower = text.lower()
+    
+    # Controlla gli hashtag esatti o le parole chiave nel testo
     if "#pokemon" in text_lower:
         return CHANNEL_POKEMON
-    elif "#onepiece" in text_lower:
+    elif "#onepiece" in text_lower or "one piece" in text_lower:
         return CHANNEL_ONEPIECE
-    elif "#dragonball" in text_lower:
+    elif "#dragonball" in text_lower or "dragon ball" in text_lower:
         return CHANNEL_DRAGONBALL
     else:
         return CHANNEL_ALTRO
