@@ -34,7 +34,7 @@ threading.Thread(target=run_web, daemon=True).start()
 # 2. Configurazione Credenziali e ID Canali Discord
 API_ID = int(os.environ.get('API_ID', 0))
 API_HASH = os.environ.get('API_HASH', '')
-TELEGRAM_CHANNEL = "https://t.me/+tNa5JDiCTVQ1ZDk0"
+TELEGRAM_CHANNEL = "pokemonpreorder"
 DISCORD_TOKEN = os.environ.get('DISCORD_TOKEN', '')
 
 # ID Canali Discord ufficiali
