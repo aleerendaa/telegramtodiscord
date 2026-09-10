@@ -131,23 +131,23 @@ class ClaimView(discord.ui.View):
 # 4. Logica Telegram & Smistamento Rigido
 def get_discord_channel_id(text):
     if not text:
-        print("⚠️ [SMISTAMENTO] Testo vuoto o assente -> Assegnato a ALTRO")
+        print("⚠️ [SMISTAMENTO] Testo vuoto o assente -> Assegnato a ALTRO", flush=True)
         return CHANNEL_ALTRO
     
     text_lower = text.lower()
-    print(f"🔍 [SMISTAMENTO] Testo ricevuto da Telegram: {text_lower}")
+    print(f"🔍 [SMISTAMENTO] Testo ricevuto: {text_lower}", flush=True)
     
     if "#pokemon" in text_lower:
-        print("✅ [SMISTAMENTO] Rilevato #pokemon -> Canale POKEMON")
+        print("✅ [SMISTAMENTO] Trovato #pokemon -> Canale POKEMON", flush=True)
         return CHANNEL_POKEMON
     elif "#onepiece" in text_lower:
-        print("✅ [SMISTAMENTO] Rilevato #onepiece -> Canale ONE PIECE")
+        print("✅ [SMISTAMENTO] Trovato #onepiece -> Canale ONE PIECE", flush=True)
         return CHANNEL_ONEPIECE
     elif "#dragonball" in text_lower:
-        print("✅ [SMISTAMENTO] Rilevato #dragonball -> Canale DRAGON BALL")
+        print("✅ [SMISTAMENTO] Trovato #dragonball -> Canale DRAGON BALL", flush=True)
         return CHANNEL_DRAGONBALL
     else:
-        print("⚠️ [SMISTAMENTO] Nessun hashtag valido trovato -> Canale ALTRO")
+        print("⚠️ [SMISTAMENTO] Nessun hashtag corrispondente -> Canale ALTRO", flush=True)
         return CHANNEL_ALTRO
 
 def apply_markup(match):
