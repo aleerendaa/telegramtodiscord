@@ -250,7 +250,6 @@ async def recap_giornaliero():
 
     conn = sqlite3.connect('ordini.db')
     cursor = conn.cursor()
-    # Prende gli ordini non ancora consegnati o gli ultimi attivi
     cursor.execute("SELECT id, username, product_name, price, quantity, status, timestamp FROM ordini WHERE status != 'Consegnato' ORDER BY id DESC LIMIT 25")
     rows = cursor.fetchall()
     conn.close()
