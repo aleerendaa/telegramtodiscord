@@ -211,18 +211,23 @@ async def album_handler(event):
     if not channel:
         return
 
-    files = []
+    discord_files = []
     for i, message in enumerate(event.messages):
         if message.photo:
-            photo_bytes = await message.download_media(file=bytes)
-            if photo_bytes:
-                files.append(discord.File(photo_bytes, filename=f'image_{i}.jpg'))
+            path = await message.download_media(file=f'temp_img_{i}.jpg')
+            if path:
+                discord_files.append(discord.File(path))
     
     cleaned, title, price = clean_message_text(text)
 
-    if files:
-        await channel.send(files=files)
+    if discord_files:
+        await channel.send(files=discord_files)
         await asyncio.sleep(1.5)
+        for f in discord_files:
+            try:
+                os.remove(f.fp.name)
+            except:
+                pass
         
     if cleaned:
         view = ClaimView(title, price)
@@ -242,11 +247,15 @@ async def single_handler(event):
     cleaned, title, price = clean_message_text(text)
     
     if event.photo:
-        photo_bytes = await event.download_media(file=bytes)
-        if photo_bytes:
-            file = discord.File(photo_bytes, filename='image.jpg')
+        path = await event.download_media(file='temp_single.jpg')
+        if path:
+            file = discord.File(path)
             await channel.send(file=file)
             await asyncio.sleep(1.5)
+            try:
+                os.remove(path)
+            except:
+                pass
             
         if cleaned:
             view = ClaimView(title, price)
