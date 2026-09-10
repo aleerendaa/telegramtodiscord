@@ -140,8 +140,24 @@ class ClaimModal(discord.ui.Modal, title="Conferma Preordine"):
 
         order_id = save_order(interaction.user.id, interaction.user.name, self.product_name, self.price, qty)
 
+        # Calcolo del totale da pagare
+        try:
+            numeric_price = float(self.price.replace('€', '').strip().replace(',', '.'))
+            total_price = numeric_price * qty
+            total_str = f"{total_price:.2f}".replace('.', ',') + " €"
+        except ValueError:
+            total_str = "N/D"
+
+        # Messaggio di conferma per l'utente senza ID, con totale e metodi di pagamento
         await interaction.followup.send(
-            f"✅ **Ordine registrato con successo!** (ID: #{order_id})\n📦 Prodotto: {self.product_name}\n🔢 Quantità: {qty}\n💰 Prezzo unitario: {self.price}",
+            f"✅ **Ordine registrato con successo!**\n\n"
+            f"📦 **Prodotto:** {self.product_name}\n"
+            f"🔢 **Quantità:** {qty}\n"
+            f"💰 **Prezzo unitario:** {self.price}\n"
+            f"💵 **Totale da pagare:** {total_str}\n\n"
+            f"💳 **Metodi di pagamento:**\n"
+            f"• **Revolut / PayPal:** `@aleerendaa`\n"
+            f"• **Bonifico:** Alessio Renda `IT33 R036 6901 6008 8620 5292 086`",
             ephemeral=True
         )
 
@@ -152,6 +168,7 @@ class ClaimModal(discord.ui.Modal, title="Conferma Preordine"):
             embed.add_field(name="Prodotto", value=self.product_name, inline=False)
             embed.add_field(name="Quantità", value=str(qty), inline=True)
             embed.add_field(name="Prezzo Unitario", value=self.price, inline=True)
+            embed.add_field(name="Totale", value=total_str, inline=True)
             embed.add_field(name="Stato Attuale", value="⏳ `Da pagare`", inline=False)
             embed.timestamp = datetime.now()
             
