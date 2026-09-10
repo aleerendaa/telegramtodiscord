@@ -24,18 +24,17 @@ def run_web():
 
 threading.Thread(target=run_web, daemon=True).start()
 
-# 2. Configurazione Credenziali
+# 2. Configurazione Credenziali e ID Canali Discord (ordinati correttamente)
 API_ID = int(os.environ.get('API_ID', 0))
 API_HASH = os.environ.get('API_HASH', '')
 TELEGRAM_CHANNEL = "https://t.me/+tNa5JDiCTVQ1ZDk0"
 
-# Token letto in modo sicuro dalle variabili d'ambiente di Render
 DISCORD_TOKEN = os.environ.get('DISCORD_TOKEN', '')
-CHANNEL_POKEMON = 1547376481477459988
-CHANNEL_ONEPIECE = 1532111869832069242
-CHANNEL_DRAGONBALL = 1532112469567471938
-CHANNEL_ALTRO = 1532112469567471938
-CHANNEL_ADMIN_LOGS = 1533540767396794479
+CHANNEL_ADMIN_LOGS = 1547376481477459988
+CHANNEL_POKEMON = 1532111869832069242
+CHANNEL_ONEPIECE = 1532112469567471938
+CHANNEL_DRAGONBALL = 1532112759490351244
+CHANNEL_ALTRO = 1533540767396794479
 
 # Inizializzazione Database SQLite locale
 def init_db():
@@ -129,19 +128,18 @@ class ClaimView(discord.ui.View):
         modal = ClaimModal(self.product_name, self.price)
         await interaction.response.send_modal(modal)
 
-# 4. Logica Telegram & Smistamento
+# 4. Logica Telegram & Smistamento Rigido
 def get_discord_channel_id(text):
     if not text:
         return CHANNEL_ALTRO
     
     text_lower = text.lower()
     
-    # Controlla gli hashtag esatti o le parole chiave nel testo
     if "#pokemon" in text_lower:
         return CHANNEL_POKEMON
-    elif "#onepiece" in text_lower or "one piece" in text_lower:
+    elif "#onepiece" in text_lower:
         return CHANNEL_ONEPIECE
-    elif "#dragonball" in text_lower or "dragon ball" in text_lower:
+    elif "#dragonball" in text_lower:
         return CHANNEL_DRAGONBALL
     else:
         return CHANNEL_ALTRO
