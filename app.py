@@ -306,7 +306,7 @@ def is_valid_product_message(text):
     
     text_lower = text.lower()
     
-    # 1. Deve contenere almeno un hashtag di categoria (se è un promemoria senza tag specifici di prodotto viene scartato)
+    # 1. Deve contenere almeno un hashtag di categoria
     has_category = any(tag in text_lower for tag in ["#pokemon", "#onepiece", "#dragonball", "#altro"])
     if not has_category:
         return False
@@ -437,7 +437,7 @@ async def menu_ordini(ctx):
     view = OrderManagementView(rows)
     await ctx.send(embed=embed, view=view)
 
-# Avvio del client Telegram con filtro anti-promemoria
+# Avvio del client Telegram con gestione sicura dei canali pubblici
 tg_client = TelegramClient('bot_session', API_ID, API_HASH)
 
 @tg_client.on(events.Album(chats=TELEGRAM_CHANNEL))
@@ -448,12 +448,15 @@ async def album_handler(event):
             text = message.raw_text
             break
     
+    print(f"[TELEGRAM ALBUM] Ricevuto messaggio da {TELEGRAM_CHANNEL}", flush=True)
     if not is_valid_product_message(text):
+        print(f"[TELEGRAM ALBUM] Messaggio scartato dai filtri (testo: {text[:30]}...)", flush=True)
         return
 
     target_channel_id = get_discord_channel_id(text)
     channel = bot.get_channel(target_channel_id)
     if not channel:
+        print(f"[ERRORE] Canale Discord con ID {target_channel_id} non trovato!", flush=True)
         return
 
     discord_files = []
@@ -477,6 +480,7 @@ async def album_handler(event):
     if cleaned:
         view = ClaimView(title, price)
         await channel.send(content=cleaned, view=view)
+        print(f"[SUCCESSO] Album inviato correttamente su Discord!", flush=True)
 
 @tg_client.on(events.NewMessage(chats=TELEGRAM_CHANNEL))
 async def single_handler(event):
@@ -484,13 +488,16 @@ async def single_handler(event):
         return
         
     text = event.raw_text or ""
+    print(f"[TELEGRAM MESSAGE] Ricevuto da {TELEGRAM_CHANNEL}: {text[:40]}...", flush=True)
     
     if not is_valid_product_message(text):
+        print(f"[TELEGRAM MESSAGE] Messaggio scartato dai filtri.", flush=True)
         return
 
     target_channel_id = get_discord_channel_id(text)
     channel = bot.get_channel(target_channel_id)
     if not channel:
+        print(f"[ERRORE] Canale Discord con ID {target_channel_id} non trovato!", flush=True)
         return
 
     cleaned, title, price = clean_message_text(text)
@@ -509,16 +516,27 @@ async def single_handler(event):
         if cleaned:
             view = ClaimView(title, price)
             await channel.send(content=cleaned, view=view)
+            print(f"[SUCCESSO] Post singolo con foto inviato su Discord!", flush=True)
     elif cleaned:
         view = ClaimView(title, price)
         await channel.send(content=cleaned, view=view)
+        print(f"[SUCCESSO] Post singolo di testo inviato su Discord!", flush=True)
 
 @bot.event
 async def on_ready():
     print(f"Bot Discord connesso come {bot.user}", flush=True)
     if not recap_giornaliero.is_running():
         recap_giornaliero.start()
+        
     await tg_client.start()
+    
+    # Verifica automatica e risoluzione dell'entità del canale Telegram
+    try:
+        channel_entity = await tg_client.get_entity(TELEGRAM_CHANNEL)
+        print(f"Canale Telegram {TELEGRAM_CHANNEL} agganciato con successo! (ID: {channel_entity.id})", flush=True)
+    except Exception as e:
+        print(f"ATTENZIONE: Impossibile risolvere {TELEGRAM_CHANNEL}. Assicurati che l'account sia iscritto al canale! Errore: {e}", flush=True)
+        
     print("Userbot Telegram avviato e in ascolto...", flush=True)
 
 if __name__ == "__main__":
