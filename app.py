@@ -129,9 +129,7 @@ class ClaimModal(discord.ui.Modal, title="Conferma Preordine"):
         self.price = price
 
     async def on_submit(self, interaction: discord.Interaction):
-        # 1. Avvisiamo SUBITO Discord che stiamo elaborando (evita il timeout dei 3 secondi)
         await interaction.response.defer(ephemeral=True)
-
         try:
             qty = int(self.quantita.value)
             if qty <= 0:
@@ -140,7 +138,6 @@ class ClaimModal(discord.ui.Modal, title="Conferma Preordine"):
             await interaction.followup.send("❌ Inserisci un numero valido maggiore di 0.", ephemeral=True)
             return
 
-        # 2. Salvataggio nel database (anche se Supabase è lento, Discord non andrà in errore)
         order_id = save_order(interaction.user.id, interaction.user.name, self.product_name, self.price, qty)
 
         await interaction.followup.send(
@@ -171,7 +168,7 @@ class ClaimView(discord.ui.View):
         modal = ClaimModal(self.product_name, self.price)
         await interaction.response.send_modal(modal)
 
-# Menu interattivo con Selezione Stato + Pulsante Download Database
+# Menu interattivo con Selezione Stato + Pulsante Elimina Ordine
 class StatusSelect(discord.ui.Select):
     def __init__(self, order_id):
         self.order_id = order_id
@@ -196,6 +193,26 @@ class StatusSelect(discord.ui.Select):
 
         await interaction.response.send_message(f"✅ L'ordine **#{self.order_id}** è stato aggiornato a: **{nuovo_stato}**", ephemeral=True)
 
+class SingleOrderManagementView(discord.ui.View):
+    def __init__(self, order_id):
+        super().__init__(timeout=60)
+        self.order_id = order_id
+        self.add_item(StatusSelect(order_id))
+
+    @discord.ui.button(label="Elimina Ordine", style=discord.ButtonStyle.danger, emoji="🗑️", row=1)
+    async def delete_order_callback(self, interaction: discord.Interaction, button: discord.ui.Button):
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        if is_postgres:
+            cursor.execute("DELETE FROM ordini WHERE id = %s", (self.order_id,))
+        else:
+            cursor.execute("DELETE FROM ordini WHERE id = ?", (self.order_id,))
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        await interaction.response.send_message(f"🗑️ L'ordine **#{self.order_id}** è stato eliminato con successo dal database.", ephemeral=True)
+
 class OrderManagementView(discord.ui.View):
     def __init__(self, orders):
         super().__init__(timeout=180)
@@ -210,12 +227,11 @@ class OrderManagementView(discord.ui.View):
         
         class SelectOrder(discord.ui.Select):
             def __init__(self, opts):
-                super().__init__(placeholder="Seleziona un ordine da modificare...", min_values=1, max_values=1, options=opts)
+                super().__init__(placeholder="Seleziona un ordine da gestire...", min_values=1, max_values=1, options=opts)
             async def callback(self, inter: discord.Interaction):
                 selected_id = int(self.values[0])
-                view = discord.ui.View(timeout=60)
-                view.add_item(StatusSelect(selected_id))
-                await inter.response.send_message(f"Seleziona il nuovo stato per l'ordine **#{selected_id}**:", view=view, ephemeral=True)
+                view = SingleOrderManagementView(selected_id)
+                await inter.response.send_message(f"Gestione ordine **#{selected_id}** (Modifica stato o elimina):", view=view, ephemeral=True)
 
         self.add_item(SelectOrder(options))
 
@@ -224,13 +240,11 @@ class OrderManagementView(discord.ui.View):
         if is_postgres:
             conn = get_db_connection()
             cursor = conn.cursor()
-            # Estrazione ordinata: id, username, product_name, quantity, price, timestamp, status
             cursor.execute("SELECT id, username, product_name, quantity, price, timestamp, status FROM ordini ORDER BY id DESC")
             rows = cursor.fetchall()
             cursor.close()
             conn.close()
 
-            # CSV formattato con separatore punto e virgola (;) e intestazioni corrette
             csv_content = "ID;Username;Prodotto;Quantita;Prezzo Unitario;Timestamp;Stato\n"
             for r in rows:
                 csv_content += f"{r[0]};{r[1]};\"{r[2]}\";{r[3]};{r[4]};{r[5]};{r[6]}\n"
@@ -284,6 +298,7 @@ def apply_markup(match):
         return f"{price:.2f}".replace('.', ',') + " €"
     except ValueError:
         return match.group(0)
+
 def clean_message_text(text):
     if not text:
         return "", "", ""
@@ -306,10 +321,8 @@ def clean_message_text(text):
         if i == 0 and line_str:
             product_title = line_str
 
-        # Cerca il prezzo nella riga (es. "27,00 €" o "27.00 €") ignorando il resto
         price_match = re.search(r'(\d+[\.,]\d{2})\s*€', line_str)
         if price_match:
-            # Se troviamo un prezzo valido e non abbiamo ancora un prezzo (o vogliamo l'ultimo valido della descrizione)
             price_str = price_match.group(1).replace(',', '.')
             try:
                 price = float(price_str)
@@ -324,9 +337,7 @@ def clean_message_text(text):
                 elif price >= 300:
                     price += 30
                 
-                calculated_price = f"{price:.2f}".replace('.', ',') + " €"
-                # Aggiorniamo il prezzo finché ne troviamo uno valido nel corpo del messaggio
-                product_price = calculated_price
+                product_price = f"{price:.2f}".replace('.', ',') + " €"
             except ValueError:
                 pass
 
@@ -386,7 +397,7 @@ async def menu_ordini(ctx):
 
     embed = discord.Embed(
         title="📊 Menu Gestione Ordini", 
-        description="Usa il menu a tendina per modificare lo stato di un ordine o clicca sul pulsante sottostante per scaricare il file completo degli ordini.", 
+        description="Usa il menu a tendina per selezionare un ordine da modificare o eliminare, oppure clicca sul pulsante sottostante per scaricare il report completo.", 
         color=discord.Color.blue()
     )
     view = OrderManagementView(rows)
