@@ -283,43 +283,35 @@ class OrderManagementView(discord.ui.View):
             else:
                 await interaction.response.send_message("❌ Database non trovato.", ephemeral=True)
 
-# 4. Logica di Smistamento, Markup e Validazione Rigorosa
+# 4. Logica di Smistamento, Markup e Validazione mirata anti-promemoria
 def get_discord_channel_id(text):
     if not text:
         return CHANNEL_ALTRO
     
-    if "#Pokemon" in text:
+    text_lower = text.lower()
+    if "#pokemon" in text_lower:
         return CHANNEL_POKEMON
-    elif "#OnePiece" in text:
+    elif "#onepiece" in text_lower:
         return CHANNEL_ONEPIECE
-    elif "#DragonBall" in text:
+    elif "#dragonball" in text_lower:
         return CHANNEL_DRAGONBALL
-    elif "#Altro" in text:
+    elif "#altro" in text_lower:
         return CHANNEL_ALTRO
     else:
-        text_lower = text.lower()
-        if "#pokemon" in text_lower:
-            return CHANNEL_POKEMON
-        elif "#onepiece" in text_lower:
-            return CHANNEL_ONEPIECE
-        elif "#dragonball" in text_lower:
-            return CHANNEL_DRAGONBALL
-        else:
-            return CHANNEL_ALTRO
+        return CHANNEL_ALTRO
 
 def is_valid_product_message(text):
     if not text:
         return False
     
-    # 1. Deve contenere almeno un hashtag '#'
-    if "#" not in text:
+    text_lower = text.lower()
+    
+    # 1. Deve contenere almeno un hashtag di categoria (se è un promemoria senza tag specifici di prodotto viene scartato)
+    has_category = any(tag in text_lower for tag in ["#pokemon", "#onepiece", "#dragonball", "#altro"])
+    if not has_category:
         return False
         
-    # 2. Non deve contenere tag '@' (nessun utente menzionato)
-    if "@" in text:
-        return False
-        
-    # 3. Deve contenere un prezzo valido (es. numeri seguiti da €)
+    # 2. Deve contenere obbligatoriamente un prezzo in euro (es. 22,00 €)
     if not re.search(r'\d+[\.,]\d{2}\s*€', text):
         return False
         
@@ -445,7 +437,7 @@ async def menu_ordini(ctx):
     view = OrderManagementView(rows)
     await ctx.send(embed=embed, view=view)
 
-# Avvio del client Telegram con controlli severi sui messaggi idonei
+# Avvio del client Telegram con filtro anti-promemoria
 tg_client = TelegramClient('bot_session', API_ID, API_HASH)
 
 @tg_client.on(events.Album(chats=TELEGRAM_CHANNEL))
@@ -456,7 +448,6 @@ async def album_handler(event):
             text = message.raw_text
             break
     
-    # Controllo validità prodotto (Hashtag obbligatorio, NO '@', prezzo obbligatorio)
     if not is_valid_product_message(text):
         return
 
@@ -494,7 +485,6 @@ async def single_handler(event):
         
     text = event.raw_text or ""
     
-    # Controllo validità prodotto (Hashtag obbligatorio, NO '@', prezzo obbligatorio)
     if not is_valid_product_message(text):
         return
 
