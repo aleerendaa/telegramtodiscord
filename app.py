@@ -365,24 +365,6 @@ def is_valid_product_message(text):
         
     return True
 
-def apply_markup(match):
-    price_str = match.group(1).replace(',', '.')
-    try:
-        price = float(price_str)
-        if 1 <= price < 15:
-            price += 3
-        elif 15 <= price < 50:
-            price += 5
-        elif 50 <= price < 150:
-            price += 10
-        elif 150 <= price < 300:
-            price += 20
-        elif price >= 300:
-            price += 30
-        return f"{price:.2f}".replace('.', ',') + " €"
-    except ValueError:
-        return match.group(0)
-
 def clean_message_text(text):
     if not text:
         return "", "", ""
@@ -395,11 +377,15 @@ def clean_message_text(text):
     for i, line in enumerate(lines):
         line_str = line.strip()
         
-        # Rimuove l'hashtag ovunque si trovi nella riga (es. #Preorder alla fine)
+        # Rimuove l'hashtag ovunque si trovi
         line_str = re.sub(r'#\w+', '', line_str).strip()
         
+        # Se la riga è vuota, la manteniamo per preservare gli spazi tra i paragrafi
+        if not line_str:
+            cleaned_lines.append("")
+            continue
+            
         if (
-            not line_str or
             "Per prenotare" in line_str or 
             "/claim" in line_str or 
             "Offerto da" in line_str
@@ -409,9 +395,9 @@ def clean_message_text(text):
         if i == 0 and line_str:
             product_title = line_str
 
-        price_match = re.search(r'(\d+([.,]\d{2})?)\s*€', line_str)
-        if price_match:
-            price_str = price_match.group(1).replace(',', '.')
+        def replace_price(match):
+            nonlocal product_price
+            price_str = match.group(1).replace(',', '.')
             try:
                 price = float(price_str)
                 if 1 <= price < 15:
@@ -425,12 +411,14 @@ def clean_message_text(text):
                 elif price >= 300:
                     price += 30
                 
+                formatted_price = f"{price:.2f}".replace('.', ',') + " €"
                 if product_price == "N/D":
-                    product_price = f"{price:.2f}".replace('.', ',') + " €"
+                    product_price = formatted_price
+                return formatted_price
             except ValueError:
-                pass
+                return match.group(0)
 
-        updated_line = re.sub(r'(\d+([.,]\d{2})?)\s*€', apply_markup, line_str)
+        updated_line = re.sub(r'(\d+([.,]\d{2})?)\s*€', replace_price, line_str)
         cleaned_lines.append(updated_line)
     
     result = "\n".join(cleaned_lines).strip()
