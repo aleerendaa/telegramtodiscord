@@ -2,6 +2,7 @@ import os
 import threading
 import asyncio
 import re
+import random
 import sqlite3
 from datetime import datetime, time, timezone
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -55,7 +56,6 @@ def get_db_connection():
 
 def init_db():
     if is_postgres:
-        # La tabella è già gestita su Supabase con la struttura corretta
         return
     
     conn = get_db_connection()
@@ -78,24 +78,75 @@ def init_db():
 
 init_db()
 
-def save_order(cliente, product_name, price, quantity):
+def trova_o_genera_codice_cliente(input_cliente):
+    """
+    Cerca nel database se esiste già un cliente con quel nome o codice.
+    Se esiste, restituisce il suo codice (es. CLI-1719).
+    Altrimenti, genera un nuovo codice univoco CLI-XXXX.
+    """
     conn = get_db_connection()
     cursor = conn.cursor()
     
-    # Pulizia del prezzo per convertirlo in numerico (es. "140,00 €" -> 140.00)
+    # Puliamo l'input dell'utente
+    input_pulito = input_cliente.strip()
+    
+    # 1. Controlliamo se l'utente ha inserito direttamente un codice esistente (es. CLI-1719)
+    if re.match(r'^CLI-\d+$', input_pulito, re.IGNORECASE):
+        cursor.execute("SELECT cliente FROM ordini WHERE cliente ILIKE %s LIMIT 1" if is_postgres else "SELECT cliente FROM ordini WHERE cliente LIKE ? LIMIT 1", (input_pulito,))
+        res = cursor.fetchone()
+        cursor.close()
+        conn.close()
+        if res:
+            return res[0].upper()
+        return input_pulito.upper()
+
+    # 2. Cerchiamo se esiste già un ordine associato a questo nome nel campo 'messaggio' o se il 'cliente' è simile
+    if is_postgres:
+        cursor.execute("SELECT cliente FROM ordini WHERE messaggio ILIKE %s OR cliente ILIKE %s LIMIT 1", (f"[user:{input_pulito}]", input_pulito))
+    else:
+        cursor.execute("SELECT cliente FROM ordini WHERE messaggio LIKE ? OR cliente LIKE ? LIMIT 1", (f"[user:{input_pulito}]", input_pulito))
+    
+    row = cursor.fetchone()
+    if row and row[0]:
+        codice_esistente = row[0]
+        cursor.close()
+        conn.close()
+        return codice_esistente
+
+    # 3. Se è un nuovo cliente, generiamo un nuovo codice univoco (es. CLI-1234)
+    while True:
+        nuovo_codice = f"CLI-{random.randint(1000, 9999)}"
+        if is_postgres:
+            cursor.execute("SELECT 1 FROM ordini WHERE cliente = %s LIMIT 1", (nuovo_codice,))
+        else:
+            cursor.execute("SELECT 1 FROM ordini WHERE cliente = ? LIMIT 1", (nuovo_codice,))
+        if not cursor.fetchone():
+            break
+
+    cursor.close()
+    conn.close()
+    return nuovo_codice
+
+def save_order(input_cliente, product_name, price, quantity):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    # Ottiene o assegna il codice cliente corretto (es. CLI-1719)
+    codice_cliente = trova_o_genera_codice_cliente(input_cliente)
+    
     try:
         numeric_price = float(price.replace('€', '').strip().replace(',', '.'))
     except ValueError:
         numeric_price = 0.0
 
     timestamp = datetime.now(timezone.utc).isoformat()
-    messaggio_str = f"[user:{cliente}]"
+    messaggio_str = f"[user:{input_cliente.strip()}]"
     
     if is_postgres:
         cursor.execute('''
             INSERT INTO ordini (cliente, prodotto, quantita, prezzo_unitario, stato, messaggio, created_at)
             VALUES (%s, %s, %s, %s, 'in_arrivo', %s, %s) RETURNING id
-        ''', (str(cliente), product_name, int(quantity), numeric_price, messaggio_str, timestamp))
+        ''', (codice_cliente, product_name, int(quantity), numeric_price, messaggio_str, timestamp))
         order_id = cursor.fetchone()[0]
     else:
         import uuid
@@ -103,12 +154,12 @@ def save_order(cliente, product_name, price, quantity):
         cursor.execute('''
             INSERT INTO ordini (id, cliente, prodotto, quantita, prezzo_unitario, stato, messaggio, created_at)
             VALUES (?, ?, ?, ?, ?, 'in_arrivo', ?, ?)
-        ''', (order_id, str(cliente), product_name, int(quantity), numeric_price, messaggio_str, timestamp))
+        ''', (order_id, codice_cliente, product_name, int(quantity), numeric_price, messaggio_str, timestamp))
         
     conn.commit()
     cursor.close()
     conn.close()
-    return order_id
+    return order_id, codice_cliente
 
 # 3. Configurazione Bot Discord e View per Admin
 intents = discord.Intents.default()
@@ -116,6 +167,14 @@ intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 class ClaimModal(discord.ui.Modal, title="Conferma Preordine"):
+    cliente_input = discord.ui.TextInput(
+        label="Nome e Cognome o Codice Cliente",
+        placeholder="Es. Mario Rossi oppure CLI-1719",
+        min_length=2,
+        max_length=50,
+        required=True
+    )
+    
     quantita = discord.ui.TextInput(
         label="Quantità desiderata",
         placeholder="Es. 1, 2, 3...",
@@ -136,8 +195,10 @@ class ClaimModal(discord.ui.Modal, title="Conferma Preordine"):
             if qty <= 0:
                 raise ValueError()
         except ValueError:
-            await interaction.followup.send("❌ Inserisci un numero valido maggiore di 0.", ephemeral=True)
+            await interaction.followup.send("❌ Inserisci una quantità valida maggiore di 0.", ephemeral=True)
             return
+
+        nome_inserito = self.cliente_input.value.strip()
 
         try:
             numeric_price = float(self.price.replace('€', '').strip().replace(',', '.'))
@@ -146,11 +207,12 @@ class ClaimModal(discord.ui.Modal, title="Conferma Preordine"):
         except ValueError:
             total_str = "N/D"
 
-        # Salvataggio su Supabase con i campi allineati alla tua tabella
-        order_id = save_order(interaction.user.name, self.product_name, self.price, qty)
+        # Salva l'ordine gestendo il codice cliente in automatico
+        order_id, codice_cliente = save_order(nome_inserito, self.product_name, self.price, qty)
 
         await interaction.followup.send(
             f"✅ **Ordine registrato con successo!**\n\n"
+            f"👤 **Cliente:** {nome_inserito} (Codice: `{codice_cliente}`)\n"
             f"📦 **Prodotto:** {self.product_name}\n"
             f"🔢 **Quantità:** {qty}\n"
             f"💰 **Prezzo unitario:** {self.price}\n"
@@ -164,7 +226,7 @@ class ClaimModal(discord.ui.Modal, title="Conferma Preordine"):
         admin_channel = bot.get_channel(CHANNEL_ADMIN_LOGS)
         if admin_channel:
             embed = discord.Embed(title=f"🛒 Nuovo Claim Ricevuto!", color=discord.Color.gold())
-            embed.add_field(name="Utente", value=f"{interaction.user.mention} ({interaction.user.name})", inline=False)
+            embed.add_field(name="Cliente", value=f"{nome_inserito} (`{codice_cliente}`)", inline=False)
             embed.add_field(name="Prodotto", value=self.product_name, inline=False)
             embed.add_field(name="Quantità", value=str(qty), inline=True)
             embed.add_field(name="Prezzo Unitario", value=self.price, inline=True)
@@ -234,7 +296,6 @@ class OrderManagementView(discord.ui.View):
         super().__init__(timeout=180)
         options = []
         for row in orders[:25]:
-            # Mappatura colonne: id, cliente, prodotto, quantita, prezzo_unitario, stato, messaggio, created_at
             oid, cliente, prodotto, quantita, prezzo_unitario, stato, messaggio, created_at = row
             options.append(discord.SelectOption(
                 label=f"{prodotto[:25]}",
