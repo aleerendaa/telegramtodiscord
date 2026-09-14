@@ -40,12 +40,15 @@ SESSION_STRING = os.environ.get('SESSION_STRING', '')
 TELEGRAM_CHANNEL = "https://t.me/+tNa5JDiCTVQ1ZDk0"
 DISCORD_TOKEN = os.environ.get('DISCORD_TOKEN', '')
 
-# ID Canali Discord ufficiali
+# ID Canali Discord ufficiali e Webhook
 CHANNEL_ADMIN_LOGS = 1533540767396794479
 CHANNEL_POKEMON = 1547376481477459988
 CHANNEL_ONEPIECE = 1532111869832069242
 CHANNEL_DRAGONBALL = 1532112469567471938
+CHANNEL_PREORDER = 1532029845481984260
 CHANNEL_ALTRO = 1532112759490351244
+
+WEBHOOK_PREORDER = "https://discord.com/api/webhooks/1542598032141590529/5LU5115Rq9vDW3buRKXn1aC29NeIXRdnNcRRaNkxModB5ICHshGfSNqFjioUHzLO1y1z"
 
 # Inizializzazione Database
 def get_db_connection():
@@ -187,63 +190,72 @@ class ClaimModal(discord.ui.Modal, title="Conferma Preordine"):
         self.price = price
 
     async def on_submit(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
         try:
-            qty = int(self.quantita.value)
-            if qty <= 0:
-                raise ValueError()
-        except ValueError:
-            await interaction.followup.send("❌ Inserisci una quantità valida maggiore di 0.", ephemeral=True)
-            return
-
-        nome_inserito = self.cliente_input.value.strip()
-
-        try:
-            numeric_price = float(self.price.replace('€', '').strip().replace(',', '.'))
-            total_price = numeric_price * qty
-            total_str = f"{total_price:.2f}".replace('.', ',') + " €"
-        except ValueError:
-            total_str = "N/D"
-
-        # Salvataggio su Supabase e recupero/generazione codice cliente
-        order_id, codice_cliente = save_order(nome_inserito, self.product_name, self.price, qty)
-
-        # Risposta privata al cliente
-        await interaction.followup.send(
-            f"✅ **Ordine registrato con successo!**\n\n"
-            f"👤 **Cliente:** {nome_inserito} (Codice: `{codice_cliente}`)\n"
-            f"📦 **Prodotto:** {self.product_name}\n"
-            f"🔢 **Quantità:** {qty}\n"
-            f"💰 **Prezzo unitario:** {self.price}\n"
-            f"💵 **Totale da pagare:** {total_str}\n\n"
-            f"💳 **Metodi di pagamento:**\n"
-            f"• **Revolut / PayPal:** `@aleerendaa`\n"
-            f"• **Bonifico:** Alessio Renda `IT33 R036 6901 6008 8620 5292 086`",
-            ephemeral=True
-        )
-
-        # Invio della notifica automatica sul canale log amministrativo (#modlogs)
-        admin_channel = bot.get_channel(CHANNEL_ADMIN_LOGS)
-        if admin_channel:
-            embed = discord.Embed(title=f"🛒 Nuovo Claim Ricevuto!", color=discord.Color.gold())
-            embed.add_field(name="Discord User", value=f"{interaction.user.mention} ({interaction.user.name})", inline=False)
-            embed.add_field(name="Cliente / Codice", value=f"{nome_inserito} (`{codice_cliente}`)", inline=False)
-            embed.add_field(name="Prodotto", value=self.product_name, inline=False)
-            embed.add_field(name="Quantità", value=str(qty), inline=True)
-            embed.add_field(name="Prezzo Unitario", value=self.price, inline=True)
-            embed.add_field(name="Totale", value=total_str, inline=True)
-            embed.add_field(name="Stato Attuale", value="⏳ `in_arrivo`", inline=False)
-            embed.timestamp = datetime.now()
+            await interaction.response.defer(ephemeral=True)
             
-            await admin_channel.send(embed=embed)
+            try:
+                qty = int(self.quantita.value)
+                if qty <= 0:
+                    raise ValueError()
+            except ValueError:
+                await interaction.followup.send("❌ Inserisci una quantità valida maggiore di 0.", ephemeral=True)
+                return
+
+            nome_inserito = self.cliente_input.value.strip()
+
+            try:
+                numeric_price = float(self.price.replace('€', '').strip().replace(',', '.'))
+                total_price = numeric_price * qty
+                total_str = f"{total_price:.2f}".replace('.', ',') + " €"
+            except ValueError:
+                total_str = "N/D"
+
+            order_id, codice_cliente = save_order(nome_inserito, self.product_name, self.price, qty)
+
+            await interaction.followup.send(
+                f"✅ **Ordine registrato con successo!**\n\n"
+                f"👤 **Cliente:** {nome_inserito} (Codice: `{codice_cliente}`)\n"
+                f"📦 **Prodotto:** {self.product_name}\n"
+                f"🔢 **Quantità:** {qty}\n"
+                f"💰 **Prezzo unitario:** {self.price}\n"
+                f"💵 **Totale da pagare:** {total_str}\n\n"
+                f"💳 **Metodi di pagamento:**\n"
+                f"• **Revolut / PayPal:** `@aleerendaa`\n"
+                f"• **Bonifico:** Alessio Renda `IT33 R036 6901 6008 8620 5292 086`",
+                ephemeral=True
+            )
+
+            # Notifica nel canale admin log (#modlogs)
+            admin_channel = bot.get_channel(CHANNEL_ADMIN_LOGS)
+            if admin_channel:
+                embed = discord.Embed(title=f"🛒 Nuovo Claim Ricevuto!", color=discord.Color.gold())
+                embed.add_field(name="Discord User", value=f"{interaction.user.mention} ({interaction.user.name})", inline=False)
+                embed.add_field(name="Cliente / Codice", value=f"{nome_inserito} (`{codice_cliente}`)", inline=False)
+                embed.add_field(name="Prodotto", value=self.product_name, inline=False)
+                embed.add_field(name="Quantità", value=str(qty), inline=True)
+                embed.add_field(name="Prezzo Unitario", value=self.price, inline=True)
+                embed.add_field(name="Totale", value=total_str, inline=True)
+                embed.add_field(name="Stato Attuale", value="⏳ `in_arrivo`", inline=False)
+                embed.timestamp = datetime.now()
+                
+                await admin_channel.send(embed=embed)
+
+        except Exception as e:
+            print(f"ERRORE CRITICO durante il salvataggio del claim: {e}", flush=True)
+            import traceback
+            traceback.print_exc()
+            try:
+                await interaction.followup.send(f"❌ Si è verificato un errore interno durante la registrazione dell'ordine.", ephemeral=True)
+            except:
+                pass
 
 class ClaimView(discord.ui.View):
     def __init__(self, product_name, price):
-        super().__init__(timeout=None)
+        super().__init__(timeout=86400)
         self.product_name = product_name
         self.price = price
 
-    @discord.ui.button(label="🛒 CLAIM", style=discord.ButtonStyle.success, custom_id="claim_button")
+    @discord.ui.button(label="🛒 CLAIM", style=discord.ButtonStyle.success)
     async def claim_button_callback(self, interaction: discord.Interaction, button: discord.ui.Button):
         modal = ClaimModal(self.product_name, self.price)
         await interaction.response.send_modal(modal)
@@ -330,7 +342,7 @@ class OrderManagementView(discord.ui.View):
         file_bytes = io.BytesIO(csv_content.encode('utf-8'))
         await interaction.response.send_message("Ecco il file di esportazione completo degli ordini:", file=discord.File(file_bytes, filename="ordini.csv"), ephemeral=True)
 
-# 4. Logica di Smistamento, Markup e Validazione generica con hashtag
+# 4. Logica di Smistamento, Markup e Validazione con hashtag (incluso #preorder)
 def get_discord_channel_id(text):
     if not text:
         return CHANNEL_ALTRO
@@ -342,6 +354,8 @@ def get_discord_channel_id(text):
         return CHANNEL_ONEPIECE
     elif "#dragonball" in text_lower:
         return CHANNEL_DRAGONBALL
+    elif "#preorder" in text_lower or "#pre-order" in text_lower:
+        return CHANNEL_PREORDER
     else:
         return CHANNEL_ALTRO
 
@@ -560,8 +574,9 @@ async def on_ready():
     print(f"Bot Discord connesso come {bot.user}", flush=True)
     if not recap_giornaliero.is_running():
         recap_giornaliero.start()
-    await tg_client.start()
-    print("Userbot Telegram avviato e in ascolto...", flush=True)
+    if not tg_client.is_connected():
+        await tg_client.start()
+        print("Userbot Telegram avviato e in ascolto...", flush=True)
 
 if __name__ == "__main__":
     if not DISCORD_TOKEN:
