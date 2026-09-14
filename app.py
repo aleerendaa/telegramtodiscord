@@ -87,7 +87,6 @@ def trova_o_genera_codice_cliente(input_cliente):
     conn = get_db_connection()
     cursor = conn.cursor()
     
-    # Puliamo l'input dell'utente
     input_pulito = input_cliente.strip()
     
     # 1. Controlliamo se l'utente ha inserito direttamente un codice esistente (es. CLI-1719)
@@ -100,7 +99,7 @@ def trova_o_genera_codice_cliente(input_cliente):
             return res[0].upper()
         return input_pulito.upper()
 
-    # 2. Cerchiamo se esiste già un ordine associato a questo nome nel campo 'messaggio' o se il 'cliente' è simile
+    # 2. Cerchiamo se esiste già un ordine associato a questo nome nel campo 'messaggio' o 'cliente'
     if is_postgres:
         cursor.execute("SELECT cliente FROM ordini WHERE messaggio ILIKE %s OR cliente ILIKE %s LIMIT 1", (f"[user:{input_pulito}]", input_pulito))
     else:
@@ -131,7 +130,6 @@ def save_order(input_cliente, product_name, price, quantity):
     conn = get_db_connection()
     cursor = conn.cursor()
     
-    # Ottiene o assegna il codice cliente corretto (es. CLI-1719)
     codice_cliente = trova_o_genera_codice_cliente(input_cliente)
     
     try:
@@ -207,9 +205,10 @@ class ClaimModal(discord.ui.Modal, title="Conferma Preordine"):
         except ValueError:
             total_str = "N/D"
 
-        # Salva l'ordine gestendo il codice cliente in automatico
+        # Salvataggio su Supabase e recupero/generazione codice cliente
         order_id, codice_cliente = save_order(nome_inserito, self.product_name, self.price, qty)
 
+        # Risposta privata al cliente
         await interaction.followup.send(
             f"✅ **Ordine registrato con successo!**\n\n"
             f"👤 **Cliente:** {nome_inserito} (Codice: `{codice_cliente}`)\n"
@@ -223,10 +222,12 @@ class ClaimModal(discord.ui.Modal, title="Conferma Preordine"):
             ephemeral=True
         )
 
+        # Invio della notifica automatica sul canale log amministrativo (#modlogs)
         admin_channel = bot.get_channel(CHANNEL_ADMIN_LOGS)
         if admin_channel:
             embed = discord.Embed(title=f"🛒 Nuovo Claim Ricevuto!", color=discord.Color.gold())
-            embed.add_field(name="Cliente", value=f"{nome_inserito} (`{codice_cliente}`)", inline=False)
+            embed.add_field(name="Discord User", value=f"{interaction.user.mention} ({interaction.user.name})", inline=False)
+            embed.add_field(name="Cliente / Codice", value=f"{nome_inserito} (`{codice_cliente}`)", inline=False)
             embed.add_field(name="Prodotto", value=self.product_name, inline=False)
             embed.add_field(name="Quantità", value=str(qty), inline=True)
             embed.add_field(name="Prezzo Unitario", value=self.price, inline=True)
