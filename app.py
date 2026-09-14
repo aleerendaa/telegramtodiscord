@@ -46,7 +46,7 @@ CHANNEL_ONEPIECE = 1532111869832069242
 CHANNEL_DRAGONBALL = 1532112469567471938
 CHANNEL_ALTRO = 1532112759490351244
 
-# Inizializzazione Database con aggiornamento sicuro della colonna
+# Inizializzazione Database
 def get_db_connection():
     if is_postgres:
         return psycopg2.connect(DATABASE_URL)
@@ -54,69 +54,56 @@ def get_db_connection():
         return sqlite3.connect('ordini.db')
 
 def init_db():
+    if is_postgres:
+        # La tabella è già gestita su Supabase con la struttura corretta
+        return
+    
     conn = get_db_connection()
     cursor = conn.cursor()
-    if is_postgres:
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS ordini (
-                id SERIAL PRIMARY KEY,
-                user_id TEXT,
-                username TEXT,
-                product_name TEXT,
-                price TEXT,
-                total_price TEXT,
-                quantity INTEGER,
-                timestamp TEXT,
-                status TEXT DEFAULT 'Da pagare'
-            )
-        ''')
-        try:
-            cursor.execute('ALTER TABLE ordini ADD COLUMN total_price TEXT;')
-            conn.commit()
-        except Exception:
-            conn.rollback()
-    else:
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS ordini (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id TEXT,
-                username TEXT,
-                product_name TEXT,
-                price TEXT,
-                total_price TEXT,
-                quantity INTEGER,
-                timestamp TEXT,
-                status TEXT DEFAULT 'Da pagare'
-            )
-        ''')
-        try:
-            cursor.execute('ALTER TABLE ordini ADD COLUMN total_price TEXT;')
-            conn.commit()
-        except Exception:
-            pass
-            
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS ordini (
+            id TEXT PRIMARY KEY,
+            cliente TEXT,
+            prodotto TEXT,
+            quantita INTEGER,
+            prezzo_unitario NUMERIC,
+            stato TEXT DEFAULT 'in_arrivo',
+            messaggio TEXT,
+            created_at TIMESTAMPTZ
+        )
+    ''')
+    conn.commit()
     cursor.close()
     conn.close()
 
 init_db()
 
-def save_order(user_id, username, product_name, price, total_price, quantity):
+def save_order(cliente, product_name, price, quantity):
     conn = get_db_connection()
     cursor = conn.cursor()
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    # Pulizia del prezzo per convertirlo in numerico (es. "140,00 €" -> 140.00)
+    try:
+        numeric_price = float(price.replace('€', '').strip().replace(',', '.'))
+    except ValueError:
+        numeric_price = 0.0
+
+    timestamp = datetime.now(timezone.utc).isoformat()
+    messaggio_str = f"[user:{cliente}]"
     
     if is_postgres:
         cursor.execute('''
-            INSERT INTO ordini (user_id, username, product_name, price, total_price, quantity, timestamp, status)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, 'Da pagare') RETURNING id
-        ''', (str(user_id), str(username), product_name, price, total_price, int(quantity), timestamp))
+            INSERT INTO ordini (cliente, prodotto, quantita, prezzo_unitario, stato, messaggio, created_at)
+            VALUES (%s, %s, %s, %s, 'in_arrivo', %s, %s) RETURNING id
+        ''', (str(cliente), product_name, int(quantity), numeric_price, messaggio_str, timestamp))
         order_id = cursor.fetchone()[0]
     else:
+        import uuid
+        order_id = str(uuid.uuid4())
         cursor.execute('''
-            INSERT INTO ordini (user_id, username, product_name, price, total_price, quantity, timestamp, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, 'Da pagare')
-        ''', (str(user_id), str(username), product_name, price, total_price, int(quantity), timestamp))
-        order_id = cursor.lastrowid
+            INSERT INTO ordini (id, cliente, prodotto, quantita, prezzo_unitario, stato, messaggio, created_at)
+            VALUES (?, ?, ?, ?, ?, 'in_arrivo', ?, ?)
+        ''', (order_id, str(cliente), product_name, int(quantity), numeric_price, messaggio_str, timestamp))
         
     conn.commit()
     cursor.close()
@@ -159,7 +146,8 @@ class ClaimModal(discord.ui.Modal, title="Conferma Preordine"):
         except ValueError:
             total_str = "N/D"
 
-        order_id = save_order(interaction.user.id, interaction.user.name, self.product_name, self.price, total_str, qty)
+        # Salvataggio su Supabase con i campi allineati alla tua tabella
+        order_id = save_order(interaction.user.name, self.product_name, self.price, qty)
 
         await interaction.followup.send(
             f"✅ **Ordine registrato con successo!**\n\n"
@@ -175,13 +163,13 @@ class ClaimModal(discord.ui.Modal, title="Conferma Preordine"):
 
         admin_channel = bot.get_channel(CHANNEL_ADMIN_LOGS)
         if admin_channel:
-            embed = discord.Embed(title=f"🛒 Nuovo Claim Ricevuto! (ID #{order_id})", color=discord.Color.gold())
+            embed = discord.Embed(title=f"🛒 Nuovo Claim Ricevuto!", color=discord.Color.gold())
             embed.add_field(name="Utente", value=f"{interaction.user.mention} ({interaction.user.name})", inline=False)
             embed.add_field(name="Prodotto", value=self.product_name, inline=False)
             embed.add_field(name="Quantità", value=str(qty), inline=True)
             embed.add_field(name="Prezzo Unitario", value=self.price, inline=True)
             embed.add_field(name="Totale", value=total_str, inline=True)
-            embed.add_field(name="Stato Attuale", value="⏳ `Da pagare`", inline=False)
+            embed.add_field(name="Stato Attuale", value="⏳ `in_arrivo`", inline=False)
             embed.timestamp = datetime.now()
             
             await admin_channel.send(embed=embed)
@@ -201,25 +189,25 @@ class StatusSelect(discord.ui.Select):
     def __init__(self, order_id):
         self.order_id = order_id
         options = [
-            discord.SelectOption(label="Da pagare", value="Da pagare", emoji="⏳", description="Imposta stato a Da pagare"),
-            discord.SelectOption(label="Pagato", value="Pagato", emoji="💳", description="Imposta stato a Pagato"),
-            discord.SelectOption(label="Consegnato", value="Consegnato", emoji="🚚", description="Imposta stato a Consegnato"),
+            discord.SelectOption(label="In arrivo", value="in_arrivo", emoji="⏳", description="Imposta stato a in_arrivo"),
+            discord.SelectOption(label="Pagato", value="pagato", emoji="💳", description="Imposta stato a pagato"),
+            discord.SelectOption(label="Consegnato", value="consegnato", emoji="🚚", description="Imposta stato a consegnato"),
         ]
-        super().__init__(placeholder=f"Modifica stato ordine #{order_id}...", min_values=1, max_values=1, options=options)
+        super().__init__(placeholder=f"Modifica stato ordine...", min_values=1, max_values=1, options=options)
 
     async def callback(self, interaction: discord.Interaction):
         nuovo_stato = self.values[0]
         conn = get_db_connection()
         cursor = conn.cursor()
         if is_postgres:
-            cursor.execute("UPDATE ordini SET status = %s WHERE id = %s", (nuovo_stato, self.order_id))
+            cursor.execute("UPDATE ordini SET stato = %s WHERE id = %s", (nuovo_stato, self.order_id))
         else:
-            cursor.execute("UPDATE ordini SET status = ? WHERE id = ?", (nuovo_stato, self.order_id))
+            cursor.execute("UPDATE ordini SET stato = ? WHERE id = ?", (nuovo_stato, self.order_id))
         conn.commit()
         cursor.close()
         conn.close()
 
-        await interaction.response.send_message(f"✅ L'ordine **#{self.order_id}** è stato aggiornato a: **{nuovo_stato}**", ephemeral=True)
+        await interaction.response.send_message(f"✅ Lo stato dell'ordine è stato aggiornato a: **{nuovo_stato}**", ephemeral=True)
 
 class SingleOrderManagementView(discord.ui.View):
     def __init__(self, order_id):
@@ -239,17 +227,18 @@ class SingleOrderManagementView(discord.ui.View):
         cursor.close()
         conn.close()
 
-        await interaction.response.send_message(f"🗑️ L'ordine **#{self.order_id}** è stato eliminato con successo dal database.", ephemeral=True)
+        await interaction.response.send_message(f"🗑️ L'ordine è stato eliminato con successo dal database.", ephemeral=True)
 
 class OrderManagementView(discord.ui.View):
     def __init__(self, orders):
         super().__init__(timeout=180)
         options = []
         for row in orders[:25]:
-            oid, username, product, price, total_price, qty, status, timestamp = row
+            # Mappatura colonne: id, cliente, prodotto, quantita, prezzo_unitario, stato, messaggio, created_at
+            oid, cliente, prodotto, quantita, prezzo_unitario, stato, messaggio, created_at = row
             options.append(discord.SelectOption(
-                label=f"ID #{oid} - {product[:20]}",
-                description=f"Utente: {username} | Tot: {total_price or 'N/D'} | Stato: {status}",
+                label=f"{prodotto[:25]}",
+                description=f"Cliente: {cliente} | Qty: {quantita} | Stato: {stato}",
                 value=str(oid)
             ))
         
@@ -257,33 +246,27 @@ class OrderManagementView(discord.ui.View):
             def __init__(self, opts):
                 super().__init__(placeholder="Seleziona un ordine da gestire...", min_values=1, max_values=1, options=opts)
             async def callback(self, inter: discord.Interaction):
-                selected_id = int(self.values[0])
+                selected_id = self.values[0]
                 view = SingleOrderManagementView(selected_id)
-                await inter.response.send_message(f"Gestione ordine **#{selected_id}** (Modifica stato o elimina):", view=view, ephemeral=True)
+                await inter.response.send_message(f"Gestione ordine selezionato (Modifica stato o elimina):", view=view, ephemeral=True)
 
         self.add_item(SelectOrder(options))
 
-    @discord.ui.button(label="📥 Scarica Database Ordini", style=discord.ButtonStyle.secondary, emoji="📊", row=1)
+    @discord.ui.button(label="📥 Scarica Report Ordini", style=discord.ButtonStyle.secondary, emoji="📊", row=1)
     async def download_db_callback(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if is_postgres:
-            conn = get_db_connection()
-            cursor = conn.cursor()
-            cursor.execute("SELECT id, username, product_name, quantity, price, total_price, timestamp, status FROM ordini ORDER BY id DESC")
-            rows = cursor.fetchall()
-            cursor.close()
-            conn.close()
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, cliente, prodotto, quantita, prezzo_unitario, stato, messaggio, created_at FROM ordini ORDER BY created_at DESC")
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
 
-            csv_content = "ID;Username;Prodotto;Quantita;Prezzo Unitario;Totale;Timestamp;Stato\n"
-            for r in rows:
-                csv_content += f"{r[0]};{r[1]};\"{r[2]}\";{r[3]};{r[4]};{r[5]};{r[6]};{r[7]}\n"
-            
-            file_bytes = io.BytesIO(csv_content.encode('utf-8'))
-            await interaction.response.send_message("Ecco il file di esportazione completo degli ordini:", file=discord.File(file_bytes, filename="ordini.csv"), ephemeral=True)
-        else:
-            if os.path.exists("ordini.db"):
-                await interaction.response.send_message("Ecco il file completo del database:", file=discord.File("ordini.db"), ephemeral=True)
-            else:
-                await interaction.response.send_message("❌ Database non trovato.", ephemeral=True)
+        csv_content = "ID;Cliente;Prodotto;Quantita;Prezzo Unitario;Stato;Messaggio;Data\n"
+        for r in rows:
+            csv_content += f"{r[0]};{r[1]};\"{r[2]}\";{r[3]};{r[4]};{r[5]};\"{r[6]}\";{r[7]}\n"
+        
+        file_bytes = io.BytesIO(csv_content.encode('utf-8'))
+        await interaction.response.send_message("Ecco il file di esportazione completo degli ordini:", file=discord.File(file_bytes, filename="ordini.csv"), ephemeral=True)
 
 # 4. Logica di Smistamento, Markup e Validazione generica con hashtag
 def get_discord_channel_id(text):
@@ -305,13 +288,10 @@ def is_valid_product_message(text):
         return False
     
     text_lower = text.lower()
-    
-    # 1. Accetta qualsiasi messaggio che contenga almeno un hashtag (es. #gundam, #altro, ecc.)
     has_hashtag = bool(re.search(r'#\w+', text_lower))
     if not has_hashtag:
         return False
         
-    # 2. Deve contenere obbligatoriamente un prezzo in euro (es. 140,00 €)
     if not re.search(r'\d+[\.,]\d{2}\s*€', text):
         return False
         
@@ -394,7 +374,7 @@ async def recap_giornaliero():
 
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT id, username, product_name, price, total_price, quantity, status, timestamp FROM ordini WHERE status != 'Consegnato' ORDER BY id DESC LIMIT 25")
+    cursor.execute("SELECT id, cliente, prodotto, quantita, prezzo_unitario, stato, messaggio, created_at FROM ordini WHERE stato != 'consegnato' ORDER BY created_at DESC LIMIT 25")
     rows = cursor.fetchall()
     cursor.close()
     conn.close()
@@ -406,11 +386,11 @@ async def recap_giornaliero():
 
     embed = discord.Embed(title="📊 Recap Giornaliero Ordini in Sospeso", color=discord.Color.orange(), timestamp=datetime.now())
     for row in rows:
-        oid, username, product, price, total_price, qty, status, timestamp = row
-        status_icon = "⏳" if status == "Da pagare" else ("💳" if status == "Pagato" else "🚚")
+        oid, cliente, prodotto, quantita, prezzo_unitario, stato, messaggio, created_at = row
+        status_icon = "⏳" if stato == "in_arrivo" else ("💳" if stato == "pagato" else "🚚")
         embed.add_field(
-            name=f"ID #{oid} - {product} (x{qty})",
-            value=f"👤 {username} | 💰 Unitario: {price} | 💵 **Totale: {total_price or 'N/D'}**\nStato: {status_icon} **{status}** | 🕒 {timestamp}",
+            name=f"{prodotto} (x{quantita})",
+            value=f"👤 Cliente: {cliente} | 💰 Unitario: {prezzo_unitario} €\nStato: {status_icon} **{stato}** | 🕒 {created_at}",
             inline=False
         )
     await admin_channel.send(embed=embed)
@@ -420,7 +400,7 @@ async def recap_giornaliero():
 async def menu_ordini(ctx):
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute('SELECT id, username, product_name, price, total_price, quantity, status, timestamp FROM ordini ORDER BY id DESC LIMIT 25')
+    cursor.execute('SELECT id, cliente, prodotto, quantita, prezzo_unitario, stato, messaggio, created_at FROM ordini ORDER BY created_at DESC LIMIT 25')
     rows = cursor.fetchall()
     cursor.close()
     conn.close()
