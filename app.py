@@ -82,17 +82,11 @@ def init_db():
 init_db()
 
 def trova_o_genera_codice_cliente(input_cliente):
-    """
-    Cerca nel database se esiste già un cliente con quel nome o codice.
-    Se esiste, restituisce il suo codice (es. CLI-1719).
-    Altrimenti, genera un nuovo codice univoco CLI-XXXX.
-    """
     conn = get_db_connection()
     cursor = conn.cursor()
     
     input_pulito = input_cliente.strip()
     
-    # 1. Controlliamo se l'utente ha inserito direttamente un codice esistente (es. CLI-1719)
     if re.match(r'^CLI-\d+$', input_pulito, re.IGNORECASE):
         cursor.execute("SELECT cliente FROM ordini WHERE cliente ILIKE %s LIMIT 1" if is_postgres else "SELECT cliente FROM ordini WHERE cliente LIKE ? LIMIT 1", (input_pulito,))
         res = cursor.fetchone()
@@ -102,7 +96,6 @@ def trova_o_genera_codice_cliente(input_cliente):
             return res[0].upper()
         return input_pulito.upper()
 
-    # 2. Cerchiamo se esiste già un ordine associato a questo nome nel campo 'messaggio' o 'cliente'
     if is_postgres:
         cursor.execute("SELECT cliente FROM ordini WHERE messaggio ILIKE %s OR cliente ILIKE %s LIMIT 1", (f"[user:{input_pulito}]", input_pulito))
     else:
@@ -115,7 +108,6 @@ def trova_o_genera_codice_cliente(input_cliente):
         conn.close()
         return codice_esistente
 
-    # 3. Se è un nuovo cliente, generiamo un nuovo codice univoco (es. CLI-1234)
     while True:
         nuovo_codice = f"CLI-{random.randint(1000, 9999)}"
         if is_postgres:
@@ -342,7 +334,7 @@ class OrderManagementView(discord.ui.View):
         file_bytes = io.BytesIO(csv_content.encode('utf-8'))
         await interaction.response.send_message("Ecco il file di esportazione completo degli ordini:", file=discord.File(file_bytes, filename="ordini.csv"), ephemeral=True)
 
-# 4. Logica di Smistamento, Markup e Validazione con hashtag (incluso #preorder)
+# 4. Logica di Smistamento, Markup e Validazione con hashtag
 def get_discord_channel_id(text):
     if not text:
         return CHANNEL_ALTRO
@@ -368,7 +360,7 @@ def is_valid_product_message(text):
     if not has_hashtag:
         return False
         
-    if not re.search(r'\d+[\.,]\d{2}\s*€', text):
+    if not re.search(r'\d+([.,]\d{2})?\s*€', text):
         return False
         
     return True
@@ -402,18 +394,22 @@ def clean_message_text(text):
     
     for i, line in enumerate(lines):
         line_str = line.strip()
+        
+        # Rimuove l'hashtag ovunque si trovi nella riga (es. #Preorder alla fine)
+        line_str = re.sub(r'#\w+', '', line_str).strip()
+        
         if (
+            not line_str or
             "Per prenotare" in line_str or 
             "/claim" in line_str or 
-            "Offerto da" in line_str or 
-            line_str.startswith("#")
+            "Offerto da" in line_str
         ):
             continue
             
         if i == 0 and line_str:
             product_title = line_str
 
-        price_match = re.search(r'(\d+[\.,]\d{2})\s*€', line_str)
+        price_match = re.search(r'(\d+([.,]\d{2})?)\s*€', line_str)
         if price_match:
             price_str = price_match.group(1).replace(',', '.')
             try:
@@ -429,11 +425,12 @@ def clean_message_text(text):
                 elif price >= 300:
                     price += 30
                 
-                product_price = f"{price:.2f}".replace('.', ',') + " €"
+                if product_price == "N/D":
+                    product_price = f"{price:.2f}".replace('.', ',') + " €"
             except ValueError:
                 pass
 
-        updated_line = re.sub(r'(\d+[\.,]\d{2})\s*€', apply_markup, line_str)
+        updated_line = re.sub(r'(\d+([.,]\d{2})?)\s*€', apply_markup, line_str)
         cleaned_lines.append(updated_line)
     
     result = "\n".join(cleaned_lines).strip()
