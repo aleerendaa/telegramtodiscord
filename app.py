@@ -479,84 +479,34 @@ async def menu_ordini(ctx):
 # Avvio del client Telegram con StringSession
 tg_client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
 
-@tg_client.on(events.Album(chats=TELEGRAM_CHANNEL))
-async def album_handler(event):
-    print(f"ID della chat corrente (Album): {event.chat_id}", flush=True)
-    text = ""
-    for message in event.messages:
-        if message.raw_text:
-            text = message.raw_text
-            break
-     
-    if not is_valid_product_message(text):
-        return
-
-    target_channel_id = get_discord_channel_id(text)
-    channel = bot.get_channel(target_channel_id)
-    if not channel:
-        return
-
-    discord_files = []
-    for i, message in enumerate(event.messages):
-        if message.photo:
-            path = await message.download_media(file=f'temp_img_{i}.jpg')
-            if path:
-                discord_files.append(discord.File(path))
-     
-    cleaned, title, price = clean_message_text(text)
-
-    if discord_files:
-        await channel.send(files=discord_files)
-        await asyncio.sleep(1.5)
-        for f in discord_files:
-            try:
-                os.remove(f.fp.name)
-            except:
-                pass
-         
-    if cleaned:
-        view = ClaimView(title, price)
-        await channel.send(content=cleaned, view=view)
-
-@tg_client.on(events.NewMessage(chats=TELEGRAM_CHANNEL))
-async def single_handler(event):
-    print(f"ID della chat corrente (Singolo): {event.chat_id}", flush=True)
-    if event.grouped_id:
-        return
-         
-    text = event.raw_text or ""
-     
-    if not is_valid_product_message(text):
-        return
-
-    target_channel_id = get_discord_channel_id(text)
-    channel = bot.get_channel(target_channel_id)
-    if not channel:
-        return
-
-    cleaned, title, price = clean_message_text(text)
-     
-    if event.photo:
-        path = await event.download_media(file='temp_single.jpg')
-        if path:
-            file = discord.File(path)
-            await channel.send(file=file)
-            await asyncio.sleep(1.5)
-            try:
-                os.remove(path)
-            except:
-                pass
-             
-        if cleaned:
-            view = ClaimView(title, price)
-            await channel.send(content=cleaned, view=view)
-    elif cleaned:
-        view = ClaimView(title, price)
-        await channel.send(content=cleaned, view=view)
-
 @tg_client.on(events.NewMessage)
 async def debug_all_messages(event):
-    print(f"DEBUG - Messaggio ricevuto da chat ID: {event.chat_id} | Testo: {event.raw_text[:30]}", flush=True)
+    print(f"DEBUG GLOBALE - Chat ID: {event.chat_id} | Testo: {event.raw_text}", flush=True)
+    
+    # Filtriamo solo per il nostro canale corretto
+    if event.chat_id != TELEGRAM_CHANNEL:
+        return
+
+    text = event.raw_text or ""
+    if is_valid_product_message(text):
+        print("-> Il messaggio è valido come preorder!", flush=True)
+        target_channel_id = get_discord_channel_id(text)
+        channel = bot.get_channel(target_channel_id)
+        if channel:
+            cleaned, title, price = clean_message_text(text)
+            view = ClaimView(title, price)
+            if event.photo:
+                path = await event.download_media(file='temp_test.jpg')
+                if path:
+                    await channel.send(file=discord.File(path), content=cleaned, view=view)
+                    os.remove(path)
+            elif cleaned:
+                await channel.send(content=cleaned, view=view)
+            print("-> Inviato con successo su Discord!", flush=True)
+        else:
+            print(f"-> ERRORE: Canale Discord non trovato per ID {target_channel_id}!", flush=True)
+    else:
+        print("-> Il messaggio è stato scartato (non rispetta la validazione hashtag/prezzo).", flush=True)
 
 @bot.event
 async def on_ready():
