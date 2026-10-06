@@ -495,22 +495,33 @@ async def debug_all_messages(event):
             cleaned, title, price = clean_message_text(text)
             view = ClaimView(title, price)
             
-            # Invio prima la foto (se presente) e poi il testo con il pulsante Claim
-            if event.photo:
-                path = await event.download_media(file='temp_test.jpg')
-                if path:
-                    await channel.send(file=discord.File(path))
-                    await asyncio.sleep(1.0)
-                    os.remove(path)
-             
-            if cleaned:
-                await channel.send(content=cleaned, view=view)
-                
-            print("-> Inviato con successo su Discord (Foto prima, poi Testo)!", flush=True)
+            try:
+                # Invio prima la foto (se presente) e poi il testo con il pulsante Claim
+                if event.photo:
+                    path = await event.download_media(file='temp_test.jpg')
+                    if path:
+                        await channel.send(file=discord.File(path))
+                        await asyncio.sleep(1.0)
+                        os.remove(path)
+                 
+                if cleaned:
+                    await channel.send(content=cleaned, view=view)
+                    
+                print("-> Inviato con successo su Discord (Foto prima, poi Testo)!", flush=True)
+            except Exception as e:
+                print(f"-> ERRORE durante l'invio su Discord: {e}", flush=True)
         else:
             print(f"-> ERRORE: Canale Discord non trovato per ID {target_channel_id}!", flush=True)
     else:
         print("-> Il messaggio è stato scartato (non rispetta la validazione hashtag/prezzo).", flush=True)
+
+async def start_telegram_client():
+    try:
+        print("Tentativo di connessione dello userbot Telegram...", flush=True)
+        await tg_client.start()
+        print("Userbot Telegram avviato e in ascolto con successo!", flush=True)
+    except Exception as e:
+        print(f"ERRORE CRITICO nell'avvio dello userbot Telegram: {e}", flush=True)
 
 @bot.event
 async def on_ready():
@@ -519,11 +530,7 @@ async def on_ready():
         recap_giornaliero.start()
         
     if not tg_client.is_connected():
-        try:
-            await tg_client.start()
-            print("Userbot Telegram avviato e in ascolto...", flush=True)
-        except Exception as e:
-            print(f"Errore nell'avvio dello userbot Telegram: {e}", flush=True)
+        bot.loop.create_task(start_telegram_client())
 
 if __name__ == "__main__":
     if not DISCORD_TOKEN:
