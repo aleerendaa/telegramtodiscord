@@ -271,7 +271,7 @@ class ClaimView(discord.ui.View):
             return
             
         if self.end_time and now > self.end_time:
-            await interaction.response.send_message(f"❌ I preordini per questo prodotto sono chiusi.\nScadenza: {self.end_time.strftime('%d/%m/%Y alle %H:%M')}", ephemeral=True)
+            await interaction.response.send_message(f"❌ I claim per questo prodotto sono chiusi, scadenza {self.end_time.strftime('%d/%m/%Y alle %H:%M')}, richiedi questo prodotto in <#1531772977073356881> e se disponibile sarà postato", ephemeral=True)
             return
 
         modal = ClaimModal(self.product_name, self.price)
