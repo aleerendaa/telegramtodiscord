@@ -521,6 +521,7 @@ async def album_handler(event):
 
 @tg_client.on(events.NewMessage(chats=TELEGRAM_CHANNEL))
 async def single_handler(event):
+    print(f"ID della chat corrente: {event.chat_id}", flush=True)
     if event.grouped_id:
         return
         
