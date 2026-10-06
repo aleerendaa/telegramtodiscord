@@ -242,13 +242,26 @@ class ClaimModal(discord.ui.Modal, title="Conferma Preordine"):
                 pass
 
 class ClaimView(discord.ui.View):
-    def __init__(self, product_name, price):
+    def __init__(self, product_name, price, start_time=None, end_time=None):
         super().__init__(timeout=86400)
         self.product_name = product_name
         self.price = price
+        self.start_time = start_time
+        self.end_time = end_time
 
     @discord.ui.button(label="🛒 CLAIM", style=discord.ButtonStyle.success)
     async def claim_button_callback(self, interaction: discord.Interaction, button: discord.ui.Button):
+        now = datetime.now()
+        
+        # Controllo validità temporale basato sulle date estratte dal testo
+        if self.start_time and now < self.start_time:
+            await interaction.response.send_message(f"⏳ I preordini per questo prodotto non sono ancora aperti!\nInizio previsto: {self.start_time.strftime('%d/%m/%Y alle %H:%M')}", ephemeral=True)
+            return
+            
+        if self.end_time and now > self.end_time:
+            await interaction.response.send_message(f"❌ I preordini per questo prodotto sono chiusi.\nScadenza: {self.end_time.strftime('%d/%m/%Y alle %H:%M')}", ephemeral=True)
+            return
+
         modal = ClaimModal(self.product_name, self.price)
         await interaction.response.send_modal(modal)
 
@@ -364,6 +377,18 @@ def is_valid_product_message(text):
         return False
          
     return True
+
+def extract_dates(text):
+    # Estrae date del tipo: "dal 05/10/2026, 18:12 fino al 12/10/2026, 12:00"
+    match = re.search(r'dal\s+(\d{2}/\d{2}/\d{4},\s*\d{2}:\d{2})\s+fino\s+al\s+(\d{2}/\d{2}/\d{4},\s*\d{2}:\d{2})', text, re.IGNORECASE)
+    start_dt, end_dt = None, None
+    if match:
+        try:
+            start_dt = datetime.strptime(match.group(1), '%d/%m/%Y, %H:%M')
+            end_dt = datetime.strptime(match.group(2), '%d/%m/%Y, %H:%M')
+        except ValueError:
+            pass
+    return start_dt, end_dt
 
 def clean_message_text(text):
     if not text:
@@ -493,8 +518,9 @@ async def debug_all_messages(event):
         channel = bot.get_channel(target_channel_id)
         if channel:
             cleaned, title, price = clean_message_text(text)
-            view = ClaimView(title, price)
-            
+            start_dt, end_dt = extract_dates(text)
+            view = ClaimView(title, price, start_dt, end_dt)
+             
             # Invio prima la foto (se presente) e poi il testo con il pulsante Claim
             if event.photo:
                 path = await event.download_media(file='temp_test.jpg')
@@ -502,7 +528,7 @@ async def debug_all_messages(event):
                     await channel.send(file=discord.File(path))
                     await asyncio.sleep(1.0)
                     os.remove(path)
-             
+              
             if cleaned:
                 await channel.send(content=cleaned, view=view)
                 
