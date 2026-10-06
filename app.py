@@ -568,14 +568,6 @@ async def on_ready():
         try:
             await tg_client.start()
             print("Userbot Telegram avviato e in ascolto...", flush=True)
-            
-            # --- AGGIUNTA PER STAMPARE GLI ID CORRETTI NEI LOG ---
-            print("--- LISTA CANALI E GRUPPI TELEGRAM ---", flush=True)
-            async for dialog in tg_client.iter_dialogs():
-                print(f"Nome: {dialog.name} | ID: {dialog.id}", flush=True)
-            print("---------------------------------------", flush=True)
-            # ----------------------------------------------------
-            
         except Exception as e:
             print(f"Errore nell'avvio dello userbot Telegram: {e}", flush=True)
 
