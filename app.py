@@ -1,132 +1,586 @@
 import os
+import threading
+import asyncio
 import re
+import random
 import sqlite3
+from datetime import datetime, time, timezone
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from telethon import TelegramClient, events
-import discord
-from discord.ext import commands
-from discord.ui import View, Button, Modal, TextInput
-
-# Configurazioni da variabili d'ambiente o dirette
-TELEGRAM_API_ID = int(os.getenv("TELEGRAM_API_ID", "IL_TUO_API_ID"))
-TELEGRAM_API_HASH = os.getenv("TELEGRAM_API_HASH", "IL_TUO_API_HASH")
-SESSION_STRING = os.getenv("SESSION_STRING", "LA_TUA_SESSION_STRING")
-DISCORD_TOKEN = os.getenv("DISCORD_TOKEN", "IL_TUO_DISCORD_TOKEN")
-DISCORD_CHANNEL_ID = int(os.getenv("DISCORD_CHANNEL_ID", "ID_CANALE_DISCORD"))
-
 from telethon.sessions import StringSession
-tg_client = TelegramClient(StringSession(SESSION_STRING), TELEGRAM_API_ID, TELEGRAM_API_HASH)
+import discord
+from discord.ext import commands, tasks
 
-intents = discord.Intents.default()
-intents.message_content = True
-bot = commands.Bot(command_prefix="!", intents=intents)
+# Gestione Database (Supporta sia SQLite locale che PostgreSQL esterno come Supabase)
+DATABASE_URL = os.environ.get('DATABASE_URL')
+is_postgres = bool(DATABASE_URL)
 
-# Database setup
+if is_postgres:
+    import psycopg2
+    import io
+
+# 1. Server web per Render
+class SimpleHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot is alive!")
+
+def run_web():
+    port = int(os.environ.get("PORT", 10000))
+    server = HTTPServer(("0.0.0.0", port), SimpleHandler)
+    server.serve_forever()
+
+threading.Thread(target=run_web, daemon=True).start()
+
+# 2. Configurazione Credenziali e ID Canali Discord
+API_ID = int(os.environ.get('API_ID', 0))
+API_HASH = os.environ.get('API_HASH', '')
+SESSION_STRING = os.environ.get('SESSION_STRING', '')
+TELEGRAM_CHANNEL = -5534040219
+DISCORD_TOKEN = os.environ.get('DISCORD_TOKEN', '')
+
+# ID Canali Discord ufficiali e Webhook
+CHANNEL_ADMIN_LOGS = 1533540767396794479
+CHANNEL_POKEMON = 1547376481477459988
+CHANNEL_ONEPIECE = 1532111869832069242
+CHANNEL_DRAGONBALL = 1532112469567471938
+CHANNEL_PREORDER = 1532029845481984260
+CHANNEL_ALTRO = 1532112759490351244
+
+WEBHOOK_PREORDER = "https://discord.com/api/webhooks/1542598032141590529/5LU5115Rq9vDW3buRKXn1aC29NeIXRdnNcRRaNkxModB5ICHshGfSNqFjioUHzLO1y1z"
+
+# Inizializzazione Database
+def get_db_connection():
+    if is_postgres:
+        return psycopg2.connect(DATABASE_URL)
+    else:
+        return sqlite3.connect('ordini.db')
+
 def init_db():
-    conn = sqlite3.connect('preorders.db')
+    if is_postgres:
+        return
+     
+    conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute('''
-        CREATE TABLE IF NOT EXISTS preorders (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            product_name TEXT,
-            price REAL,
-            markup_price REAL,
-            hashtag TEXT,
-            claimed_by TEXT
+        CREATE TABLE IF NOT EXISTS ordini (
+            id TEXT PRIMARY KEY,
+            cliente TEXT,
+            prodotto TEXT,
+            quantita INTEGER,
+            prezzo_unitario NUMERIC,
+            stato TEXT DEFAULT 'in_arrivo',
+            messaggio TEXT,
+            created_at TIMESTAMPTZ
         )
     ''')
     conn.commit()
+    cursor.close()
     conn.close()
 
 init_db()
 
+def trova_o_genera_codice_cliente(input_cliente):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+     
+    input_pulito = input_cliente.strip()
+     
+    if re.match(r'^CLI-\d+$', input_pulito, re.IGNORECASE):
+        cursor.execute("SELECT cliente FROM ordini WHERE cliente ILIKE %s LIMIT 1" if is_postgres else "SELECT cliente FROM ordini WHERE cliente LIKE ? LIMIT 1", (input_pulito,))
+        res = cursor.fetchone()
+        cursor.close()
+        conn.close()
+        if res:
+            return res[0].upper()
+        return input_pulito.upper()
+
+    if is_postgres:
+        cursor.execute("SELECT cliente FROM ordini WHERE messaggio ILIKE %s OR cliente ILIKE %s LIMIT 1", (f"[user:{input_pulito}]", input_pulito))
+    else:
+        cursor.execute("SELECT cliente FROM ordini WHERE messaggio LIKE ? OR cliente LIKE ? LIMIT 1", (f"[user:{input_pulito}]", input_pulito))
+     
+    row = cursor.fetchone()
+    if row and row[0]:
+        codice_esistente = row[0]
+        cursor.close()
+        conn.close()
+        return codice_esistente
+
+    while True:
+        nuovo_codice = f"CLI-{random.randint(1000, 9999)}"
+        if is_postgres:
+            cursor.execute("SELECT 1 FROM ordini WHERE cliente = %s LIMIT 1", (nuovo_codice,))
+        else:
+            cursor.execute("SELECT 1 FROM ordini WHERE cliente = ? LIMIT 1", (nuovo_codice,))
+        if not cursor.fetchone():
+            break
+
+    cursor.close()
+    conn.close()
+    return nuovo_codice
+
+def save_order(input_cliente, product_name, price, quantity):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+     
+    codice_cliente = trova_o_genera_codice_cliente(input_cliente)
+     
+    try:
+        numeric_price = float(price.replace('€', '').strip().replace(',', '.'))
+    except ValueError:
+        numeric_price = 0.0
+
+    timestamp = datetime.now(timezone.utc).isoformat()
+    messaggio_str = f"[user:{input_cliente.strip()}]"
+     
+    if is_postgres:
+        cursor.execute('''
+            INSERT INTO ordini (cliente, prodotto, quantita, prezzo_unitario, stato, messaggio, created_at)
+            VALUES (%s, %s, %s, %s, 'in_arrivo', %s, %s) RETURNING id
+        ''', (codice_cliente, product_name, int(quantity), numeric_price, messaggio_str, timestamp))
+        order_id = cursor.fetchone()[0]
+    else:
+        import uuid
+        order_id = str(uuid.uuid4())
+        cursor.execute('''
+            INSERT INTO ordini (id, cliente, prodotto, quantita, prezzo_unitario, stato, messaggio, created_at)
+            VALUES (?, ?, ?, ?, ?, 'in_arrivo', ?, ?)
+        ''', (order_id, codice_cliente, product_name, int(quantity), numeric_price, messaggio_str, timestamp))
+         
+    conn.commit()
+    cursor.close()
+    conn.close()
+    return order_id, codice_cliente
+
+# 3. Configurazione Bot Discord e View per Admin
+intents = discord.Intents.default()
+intents.message_content = True
+bot = commands.Bot(command_prefix="!", intents=intents)
+
+class ClaimModal(discord.ui.Modal, title="Conferma Preordine"):
+    cliente_input = discord.ui.TextInput(
+        label="Nome e Cognome o Codice Cliente",
+        placeholder="Es. Mario Rossi oppure CLI-1719",
+        min_length=2,
+        max_length=50,
+        required=True
+    )
+     
+    quantita = discord.ui.TextInput(
+        label="Quantità desiderata",
+        placeholder="Es. 1, 2, 3...",
+        min_length=1,
+        max_length=3,
+        required=True
+    )
+
+    def __init__(self, product_name, price):
+        super().__init__()
+        self.product_name = product_name
+        self.price = price
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            await interaction.response.defer(ephemeral=True)
+             
+            try:
+                qty = int(self.quantita.value)
+                if qty <= 0:
+                    raise ValueError()
+            except ValueError:
+                await interaction.followup.send("❌ Inserisci una quantità valida maggiore di 0.", ephemeral=True)
+                return
+
+            nome_inserito = self.cliente_input.value.strip()
+
+            try:
+                numeric_price = float(self.price.replace('€', '').strip().replace(',', '.'))
+                total_price = numeric_price * qty
+                total_str = f"{total_price:.2f}".replace('.', ',') + " €"
+            except ValueError:
+                total_str = "N/D"
+
+            order_id, codice_cliente = save_order(nome_inserito, self.product_name, self.price, qty)
+
+            await interaction.followup.send(
+                f"✅ **Ordine registrato con successo!**\n\n"
+                f"👤 **Cliente:** {nome_inserito} (Codice: `{codice_cliente}`)\n"
+                f"📦 **Prodotto:** {self.product_name}\n"
+                f"🔢 **Quantità:** {qty}\n"
+                f"💰 **Prezzo unitario:** {self.price}\n"
+                f"💵 **Totale da pagare:** {total_str}\n\n"
+                f"💳 **Metodi di pagamento:**\n"
+                f"• **Revolut / PayPal:** `@aleerendaa`\n"
+                f"• **Bonifico:** Alessio Renda `IT33 R036 6901 6008 8620 5292 086`",
+                ephemeral=True
+            )
+
+            # Notifica nel canale admin log (#modlogs)
+            admin_channel = bot.get_channel(CHANNEL_ADMIN_LOGS)
+            if admin_channel:
+                embed = discord.Embed(title=f"🛒 Nuovo Claim Ricevuto!", color=discord.Color.gold())
+                embed.add_field(name="Discord User", value=f"{interaction.user.mention} ({interaction.user.name})", inline=False)
+                embed.add_field(name="Cliente / Codice", value=f"{nome_inserito} (`{codice_cliente}`)", inline=False)
+                embed.add_field(name="Prodotto", value=self.product_name, inline=False)
+                embed.add_field(name="Quantità", value=str(qty), inline=True)
+                embed.add_field(name="Prezzo Unitario", value=self.price, inline=True)
+                embed.add_field(name="Totale", value=total_str, inline=True)
+                embed.add_field(name="Stato Attuale", value="⏳ `in_arrivo`", inline=False)
+                embed.timestamp = datetime.now()
+                 
+                await admin_channel.send(embed=embed)
+
+        except Exception as e:
+            print(f"ERRORE CRITICO durante il salvataggio del claim: {e}", flush=True)
+            import traceback
+            traceback.print_exc()
+            try:
+                await interaction.followup.send(f"❌ Si è verificato un errore interno durante la registrazione dell'ordine.", ephemeral=True)
+            except:
+                pass
+
+class ClaimView(discord.ui.View):
+    def __init__(self, product_name, price):
+        super().__init__(timeout=86400)
+        self.product_name = product_name
+        self.price = price
+
+    @discord.ui.button(label="🛒 CLAIM", style=discord.ButtonStyle.success)
+    async def claim_button_callback(self, interaction: discord.Interaction, button: discord.ui.Button):
+        modal = ClaimModal(self.product_name, self.price)
+        await interaction.response.send_modal(modal)
+
+class StatusSelect(discord.ui.Select):
+    def __init__(self, order_id):
+        self.order_id = order_id
+        options = [
+            discord.SelectOption(label="In arrivo", value="in_arrivo", emoji="⏳", description="Imposta stato a in_arrivo"),
+            discord.SelectOption(label="Pagato", value="pagato", emoji="💳", description="Imposta stato a pagato"),
+            discord.SelectOption(label="Consegnato", value="consegnato", emoji="🚚", description="Imposta stato a consegnato"),
+        ]
+        super().__init__(placeholder=f"Modifica stato ordine...", min_values=1, max_values=1, options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        nuovo_stato = self.values[0]
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        if is_postgres:
+            cursor.execute("UPDATE ordini SET stato = %s WHERE id = %s", (nuovo_stato, self.order_id))
+        else:
+            cursor.execute("UPDATE ordini SET stato = ? WHERE id = ?", (nuovo_stato, self.order_id))
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        await interaction.response.send_message(f"✅ Lo stato dell'ordine è stato aggiornato a: **{nuovo_stato}**", ephemeral=True)
+
+class SingleOrderManagementView(discord.ui.View):
+    def __init__(self, order_id):
+        super().__init__(timeout=60)
+        self.order_id = order_id
+        self.add_item(StatusSelect(order_id))
+
+    @discord.ui.button(label="Elimina Ordine", style=discord.ButtonStyle.danger, emoji="🗑️", row=1)
+    async def delete_order_callback(self, interaction: discord.Interaction, button: discord.ui.Button):
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        if is_postgres:
+            cursor.execute("DELETE FROM ordini WHERE id = %s", (self.order_id,))
+        else:
+            cursor.execute("DELETE FROM ordini WHERE id = ?", (self.order_id,))
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        await interaction.response.send_message(f"🗑 L'ordine è stato eliminato con successo dal database.", ephemeral=True)
+
+class OrderManagementView(discord.ui.View):
+    def __init__(self, orders):
+        super().__init__(timeout=180)
+        options = []
+        for row in orders[:25]:
+            oid, cliente, prodotto, quantita, prezzo_unitario, stato, messaggio, created_at = row
+            options.append(discord.SelectOption(
+                label=f"{prodotto[:25]}",
+                description=f"Cliente: {cliente} | Qty: {quantita} | Stato: {stato}",
+                value=str(oid)
+            ))
+         
+        class SelectOrder(discord.ui.Select):
+            def __init__(self, opts):
+                super().__init__(placeholder="Seleziona un ordine da gestire...", min_values=1, max_values=1, options=opts)
+            async def callback(self, inter: discord.Interaction):
+                selected_id = self.values[0]
+                view = SingleOrderManagementView(selected_id)
+                await inter.response.send_message(f"Gestione ordine selezionato (Modifica stato o elimina):", view=view, ephemeral=True)
+
+        self.add_item(SelectOrder(options))
+
+    @discord.ui.button(label="📥 Scarica Report Ordini", style=discord.ButtonStyle.secondary, emoji="📊", row=1)
+    async def download_db_callback(self, interaction: discord.Interaction, button: discord.ui.Button):
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, cliente, prodotto, quantita, prezzo_unitario, stato, messaggio, created_at FROM ordini ORDER BY created_at DESC")
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+
+        csv_content = "ID;Cliente;Prodotto;Quantita;Prezzo Unitario;Stato;Messaggio;Data\n"
+        for r in rows:
+            csv_content += f"{r[0]};{r[1]};\"{r[2]}\";{r[3]};{r[4]};{r[5]};\"{r[6]}\";{r[7]}\n"
+         
+        file_bytes = io.BytesIO(csv_content.encode('utf-8'))
+        await interaction.response.send_message("Ecco il file di esportazione completo degli ordini:", file=discord.File(file_bytes, filename="ordini.csv"), ephemeral=True)
+
+# 4. Logica di Smistamento, Markup e Validazione con hashtag
+def get_discord_channel_id(text):
+    if not text:
+        return CHANNEL_ALTRO
+     
+    text_lower = text.lower()
+    if "#pokemon" in text_lower:
+        return CHANNEL_POKEMON
+    elif "#onepiece" in text_lower:
+        return CHANNEL_ONEPIECE
+    elif "#dragonball" in text_lower:
+        return CHANNEL_DRAGONBALL
+    elif "#preorder" in text_lower or "#pre-order" in text_lower:
+        return CHANNEL_PREORDER
+    else:
+        return CHANNEL_ALTRO
+
 def is_valid_product_message(text):
     if not text:
         return False
-    has_hashtag = bool(re.search(r'#\w+', text))
-    has_price = bool(re.search(r'\d+([.,]\d{2})?\s*€', text))
-    return has_hashtag and has_price
+     
+    text_lower = text.lower()
+    has_hashtag = bool(re.search(r'#\w+', text_lower))
+    if not has_hashtag:
+        return False
+         
+    if not re.search(r'\d+([.,]\d{2})?\s*€', text):
+        return False
+         
+    return True
 
-def calculate_markup(price):
-    # Esempio di markup del 10%
-    return round(price * 1.10, 2)
+def clean_message_text(text):
+    if not text:
+        return "", "", ""
+     
+    lines = text.split('\n')
+    cleaned_lines = []
+    product_title = "Prodotto Preorder"
+    product_price = "N/D"
+     
+    for i, line in enumerate(lines):
+        line_str = line.strip()
+         
+        line_str = re.sub(r'#\w+', '', line_str).strip()
+         
+        if not line_str:
+            cleaned_lines.append("")
+            continue
+             
+        if (
+            "Per prenotare" in line_str or 
+            "/claim" in line_str or 
+            "Offerto da" in line_str
+        ):
+            continue
+             
+        if i == 0 and line_str:
+            product_title = line_str
 
-class ClaimView(View):
-    def __init__(self, product_id):
-        super().__init__(timeout=None)
-        self.product_id = product_id
+        def replace_price(match):
+            nonlocal product_price
+            price_str = match.group(1).replace(',', '.')
+            try:
+                price = float(price_str)
+                if 1 <= price < 15:
+                    price += 3
+                elif 15 <= price < 50:
+                    price += 5
+                elif 50 <= price < 150:
+                    price += 10
+                elif 150 <= price < 300:
+                    price += 20
+                elif price >= 300:
+                    price += 30
+                 
+                formatted_price = f"{price:.2f}".replace('.', ',') + " €"
+                if product_price == "N/D":
+                    product_price = formatted_price
+                return formatted_price
+            except ValueError:
+                return match.group(0)
 
-    @discord.ui.button(label="Claim Prodotto", style=discord.ButtonStyle.green, custom_id="claim_button")
-    async def claim_callback(self, interaction: discord.Interaction, button: Button):
-        user_name = interaction.user.name
-        conn = sqlite3.connect('preorders.db')
-        cursor = conn.cursor()
-        cursor.execute("UPDATE preorders SET claimed_by = ? WHERE id = ?", (user_name, self.product_id))
-        conn.commit()
-        conn.close()
-        
-        await interaction.response.send_message(f"Prodotto reclamato con successo da {user_name}!", ephemeral=True)
+        updated_line = re.sub(r'(\d+([.,]\d{2})?)\s*€', replace_price, line_str)
+        cleaned_lines.append(updated_line)
+     
+    result = "\n".join(cleaned_lines).strip()
+    if result:
+        result = f"{result}\n──────────────────────────────"
+         
+    return result, product_title, product_price
+
+@tasks.loop(time=time(hour=9, minute=0, tzinfo=timezone.utc))
+async def recap_giornaliero():
+    admin_channel = bot.get_channel(CHANNEL_ADMIN_LOGS)
+    if not admin_channel:
+        return
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, cliente, prodotto, quantita, prezzo_unitario, stato, messaggio, created_at FROM ordini WHERE stato != 'consegnato' ORDER BY created_at DESC LIMIT 25")
+    rows = cursor.fetchall()
+    cursor.close()
+    conn.close()
+
+    if not rows:
+        embed = discord.Embed(title="📊 Recap Giornaliero Ordini", description="Ottimo! Non ci sono ordini in sospeso (tutti consegnati).", color=discord.Color.green())
+        await admin_channel.send(embed=embed)
+        return
+
+    embed = discord.Embed(title="📊 Recap Giornaliero Ordini in Sospeso", color=discord.Color.orange(), timestamp=datetime.now())
+    for row in rows:
+        oid, cliente, prodotto, quantita, prezzo_unitario, stato, messaggio, created_at = row
+        status_icon = "⏳" if stato == "in_arrivo" else ("💳" if stato == "pagato" else "🚚")
+        embed.add_field(
+            name=f"{prodotto} (x{quantita})",
+            value=f"👤 Cliente: {cliente} | 💰 Unitario: {prezzo_unitario} €\nStato: {status_icon} **{stato}** | 🕒 {created_at}",
+            inline=False
+        )
+    await admin_channel.send(embed=embed)
+
+@bot.command(name="menu")
+@commands.has_permissions(administrator=True)
+async def menu_ordini(ctx):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('SELECT id, cliente, prodotto, quantita, prezzo_unitario, stato, messaggio, created_at FROM ordini ORDER BY created_at DESC LIMIT 25')
+    rows = cursor.fetchall()
+    cursor.close()
+    conn.close()
+
+    if not rows:
+        await ctx.send("📭 Nessun ordine registrato nel database.")
+        return
+
+    embed = discord.Embed(
+        title="📊 Menu Gestione Ordini", 
+        description="Usa il menu a tendina per selezionare un ordine da modificare o eliminare, oppure clicca sul pulsante sottostante per scaricare il report completo.", 
+        color=discord.Color.blue()
+    )
+    view = OrderManagementView(rows)
+    await ctx.send(embed=embed, view=view)
+
+# Avvio del client Telegram con StringSession
+tg_client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
+
+@tg_client.on(events.Album(chats=TELEGRAM_CHANNEL))
+async def album_handler(event):
+    print(f"ID della chat corrente (Album): {event.chat_id}", flush=True)
+    text = ""
+    for message in event.messages:
+        if message.raw_text:
+            text = message.raw_text
+            break
+     
+    if not is_valid_product_message(text):
+        return
+
+    target_channel_id = get_discord_channel_id(text)
+    channel = bot.get_channel(target_channel_id)
+    if not channel:
+        return
+
+    discord_files = []
+    for i, message in enumerate(event.messages):
+        if message.photo:
+            path = await message.download_media(file=f'temp_img_{i}.jpg')
+            if path:
+                discord_files.append(discord.File(path))
+     
+    cleaned, title, price = clean_message_text(text)
+
+    if discord_files:
+        await channel.send(files=discord_files)
+        await asyncio.sleep(1.5)
+        for f in discord_files:
+            try:
+                os.remove(f.fp.name)
+            except:
+                pass
+         
+    if cleaned:
+        view = ClaimView(title, price)
+        await channel.send(content=cleaned, view=view)
+
+@tg_client.on(events.NewMessage(chats=TELEGRAM_CHANNEL))
+async def single_handler(event):
+    print(f"ID della chat corrente (Singolo): {event.chat_id}", flush=True)
+    if event.grouped_id:
+        return
+         
+    text = event.raw_text or ""
+     
+    if not is_valid_product_message(text):
+        return
+
+    target_channel_id = get_discord_channel_id(text)
+    channel = bot.get_channel(target_channel_id)
+    if not channel:
+        return
+
+    cleaned, title, price = clean_message_text(text)
+     
+    if event.photo:
+        path = await event.download_media(file='temp_single.jpg')
+        if path:
+            file = discord.File(path)
+            await channel.send(file=file)
+            await asyncio.sleep(1.5)
+            try:
+                os.remove(path)
+            except:
+                pass
+             
+        if cleaned:
+            view = ClaimView(title, price)
+            await channel.send(content=cleaned, view=view)
+    elif cleaned:
+        view = ClaimView(title, price)
+        await channel.send(content=cleaned, view=view)
 
 @tg_client.on(events.NewMessage)
-async def handle_telegram_message(event):
-    chat = await event.get_chat()
-    chat_id = event.chat_id
-    text = event.raw_text
-    
-    print(f"DEBUG - Messaggio ricevuto da chat ID: {chat_id} | Testo: {text}", flush=True)
-
-    if is_valid_product_message(text):
-        # Estrai prezzo base
-        price_match = re.search(r'(\d+([.,]\d{2})?)\s*€', text.replace(',', '.'))
-        base_price = float(price_match.group(1)) if price_match else 0.0
-        markup_price = calculate_markup(base_price)
-        
-        hashtag_match = re.search(r'#\w+', text)
-        hashtag = hashtag_match.group(0) if hashtag_match else "#generico"
-
-        # Salva su DB
-        conn = sqlite3.connect('preorders.db')
-        cursor = conn.cursor()
-        cursor.execute("INSERT INTO preorders (product_name, price, markup_price, hashtag) VALUES (?, ?, ?, ?)",
-                       (text, base_price, markup_price, hashtag))
-        product_id = cursor.lastrowid
-        conn.commit()
-        conn.close()
-
-        # Invia su Discord
-        discord_channel = bot.get_channel(DISCORD_CHANNEL_ID)
-        if discord_channel:
-            embed = discord.Embed(title="Nuovo Preorder Disponibile!", description=text, color=discord.Color.blue())
-            embed.add_field(name="Prezzo Originale", value=f"{base_price:.2f} €", inline=True)
-            embed.add_field(name="Prezzo con Markup", value=f"{markup_price:.2f} €", inline=True)
-            embed.add_field(name="Hashtag", value=hashtag, inline=False)
-            
-            view = ClaimView(product_id)
-            await discord_channel.send(embed=embed, view=view)
+async def debug_all_messages(event):
+    print(f"DEBUG - Messaggio ricevuto da chat ID: {event.chat_id} | Testo: {event.raw_text[:30]}", flush=True)
 
 @bot.event
 async def on_ready():
-    print(f"Bot Discord avviato come {bot.user}", flush=True)
-    
-    # Avvia Telethon se non è già connesso
-    if not tg_client.is_connected():
-        await tg_client.start()
-        print("Client Telethon avviato con successo!", flush=True)
+    print(f"Bot Discord connesso come {bot.user}", flush=True)
+    if not recap_giornaliero.is_running():
+        recap_giornaliero.start()
         
-        # Stampa l'ID corretto di tutti i canali/gruppi per trovare quello giusto
-        async for dialog in tg_client.iter_dialogs():
-            print(f"Chat trovata -> Nome: {dialog.name} | ID: {dialog.id}", flush=True)
+    if not tg_client.is_connected():
+        try:
+            await tg_client.start()
+            print("Userbot Telegram avviato e in ascolto...", flush=True)
+            
+            # --- AGGIUNTA PER STAMPARE GLI ID CORRETTI NEI LOG ---
+            print("--- LISTA CANALI E GRUPPI TELEGRAM ---", flush=True)
+            async for dialog in tg_client.iter_dialogs():
+                print(f"Nome: {dialog.name} | ID: {dialog.id}", flush=True)
+            print("---------------------------------------", flush=True)
+            # ----------------------------------------------------
+            
+        except Exception as e:
+            print(f"Errore nell'avvio dello userbot Telegram: {e}", flush=True)
 
-# Avvio combinato
-async def main():
-    await tg_client.connect()
-    # Esegui il client Discord e Telethon insieme
-    await discord.BasesClient.start(bot, DISCORD_TOKEN) if hasattr(discord, 'BasesClient') else await bot.start(DISCORD_TOKEN)
-
-if __name__ == '__main__':
-    import asyncio
-    loop = asyncio.get_event_loop()
-    try:
-        loop.run_until_complete(bot.start(DISCORD_TOKEN))
-    except KeyboardInterrupt:
-        loop.run_until_complete(tg_client.disconnect())
-        loop.run_until_complete(bot.close())
+if __name__ == "__main__":
+    if not DISCORD_TOKEN:
+        print("Errore: DISCORD_TOKEN non trovato nelle variabili d'ambiente!", flush=True)
+    else:
+        bot.run(DISCORD_TOKEN)
