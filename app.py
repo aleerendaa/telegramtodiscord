@@ -5,7 +5,7 @@ import re
 import random
 import uuid
 import sqlite3
-from datetime import datetime, time, timezone
+from datetime import datetime, time, timezone, timedelta
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
@@ -22,6 +22,9 @@ if is_postgres:
 
 # Dizionario globale per tracciare l'ultima versione attiva di ciascun prodotto (per invalidare i vecchi repost)
 active_product_versions = {}
+
+# Fuso orario italiano (UTC+2 in regime di ora legale / CEST)
+ITALY_TZ = timezone(timedelta(hours=2))
 
 # 1. Server web per Render
 class SimpleHandler(BaseHTTPRequestHandler):
@@ -260,9 +263,9 @@ class ClaimView(discord.ui.View):
             await interaction.response.send_message("❌ Questo annuncio è stato aggiornato o ripostato con nuovi dettagli! Usa il pulsante nel messaggio più recente.", ephemeral=True)
             return
 
-        now = datetime.now()
+        now = datetime.now(ITALY_TZ)
         
-        # Controllo validità temporale basato sulle date estratte dal testo
+        # Controllo validità temporale basato sulle date estratte dal testo (confrontate in orario italiano)
         if self.start_time and now < self.start_time:
             await interaction.response.send_message(f"⏳ I preordini per questo prodotto non sono ancora aperti!\nInizio previsto: {self.start_time.strftime('%d/%m/%Y alle %H:%M')}", ephemeral=True)
             return
@@ -388,13 +391,13 @@ def is_valid_product_message(text):
     return True
 
 def extract_dates(text):
-    # Estrae date del tipo: "dal 05/10/2026, 18:12 fino al 12/10/2026, 12:00"
+    # Estrae date del tipo: "dal 05/10/2026, 18:12 fino al 12/10/2026, 12:00" e applica il fuso orario italiano
     match = re.search(r'dal\s+(\d{2}/\d{2}/\d{4},\s*\d{2}:\d{2})\s+fino\s+al\s+(\d{2}/\d{2}/\d{4},\s*\d{2}:\d{2})', text, re.IGNORECASE)
     start_dt, end_dt = None, None
     if match:
         try:
-            start_dt = datetime.strptime(match.group(1), '%d/%m/%Y, %H:%M')
-            end_dt = datetime.strptime(match.group(2), '%d/%m/%Y, %H:%M')
+            start_dt = datetime.strptime(match.group(1), '%d/%m/%Y, %H:%M').replace(tzinfo=ITALY_TZ)
+            end_dt = datetime.strptime(match.group(2), '%d/%m/%Y, %H:%M').replace(tzinfo=ITALY_TZ)
         except ValueError:
             pass
     return start_dt, end_dt
