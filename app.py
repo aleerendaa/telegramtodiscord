@@ -426,7 +426,9 @@ def clean_message_text(text):
         result = f"{result}\n──────────────────────────────"
         
     return result, product_title, product_price
-
+@tg_client.on(events.NewMessage)
+async def debug_all_messages(event):
+    print(f"DEBUG - Messaggio ricevuto da chat ID: {event.chat_id} | Testo: {event.raw_text[:30]}", flush=True)
 @tasks.loop(time=time(hour=9, minute=0, tzinfo=timezone.utc))
 async def recap_giornaliero():
     admin_channel = bot.get_channel(CHANNEL_ADMIN_LOGS)
