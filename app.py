@@ -37,7 +37,7 @@ threading.Thread(target=run_web, daemon=True).start()
 API_ID = int(os.environ.get('API_ID', 0))
 API_HASH = os.environ.get('API_HASH', '')
 SESSION_STRING = os.environ.get('SESSION_STRING', '')
-TELEGRAM_CHANNEL = -5534040219
+TELEGRAM_CHANNEL = -1003944376038
 DISCORD_TOKEN = os.environ.get('DISCORD_TOKEN', '')
 
 # ID Canali Discord ufficiali e Webhook
