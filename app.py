@@ -60,7 +60,7 @@ def get_db_connection():
 def init_db():
     if is_postgres:
         return
-    
+     
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute('''
@@ -84,9 +84,9 @@ init_db()
 def trova_o_genera_codice_cliente(input_cliente):
     conn = get_db_connection()
     cursor = conn.cursor()
-    
+     
     input_pulito = input_cliente.strip()
-    
+     
     if re.match(r'^CLI-\d+$', input_pulito, re.IGNORECASE):
         cursor.execute("SELECT cliente FROM ordini WHERE cliente ILIKE %s LIMIT 1" if is_postgres else "SELECT cliente FROM ordini WHERE cliente LIKE ? LIMIT 1", (input_pulito,))
         res = cursor.fetchone()
@@ -100,7 +100,7 @@ def trova_o_genera_codice_cliente(input_cliente):
         cursor.execute("SELECT cliente FROM ordini WHERE messaggio ILIKE %s OR cliente ILIKE %s LIMIT 1", (f"[user:{input_pulito}]", input_pulito))
     else:
         cursor.execute("SELECT cliente FROM ordini WHERE messaggio LIKE ? OR cliente LIKE ? LIMIT 1", (f"[user:{input_pulito}]", input_pulito))
-    
+     
     row = cursor.fetchone()
     if row and row[0]:
         codice_esistente = row[0]
@@ -124,9 +124,9 @@ def trova_o_genera_codice_cliente(input_cliente):
 def save_order(input_cliente, product_name, price, quantity):
     conn = get_db_connection()
     cursor = conn.cursor()
-    
+     
     codice_cliente = trova_o_genera_codice_cliente(input_cliente)
-    
+     
     try:
         numeric_price = float(price.replace('€', '').strip().replace(',', '.'))
     except ValueError:
@@ -134,7 +134,7 @@ def save_order(input_cliente, product_name, price, quantity):
 
     timestamp = datetime.now(timezone.utc).isoformat()
     messaggio_str = f"[user:{input_cliente.strip()}]"
-    
+     
     if is_postgres:
         cursor.execute('''
             INSERT INTO ordini (cliente, prodotto, quantita, prezzo_unitario, stato, messaggio, created_at)
@@ -148,7 +148,7 @@ def save_order(input_cliente, product_name, price, quantity):
             INSERT INTO ordini (id, cliente, prodotto, quantita, prezzo_unitario, stato, messaggio, created_at)
             VALUES (?, ?, ?, ?, ?, 'in_arrivo', ?, ?)
         ''', (order_id, codice_cliente, product_name, int(quantity), numeric_price, messaggio_str, timestamp))
-        
+         
     conn.commit()
     cursor.close()
     conn.close()
@@ -167,7 +167,7 @@ class ClaimModal(discord.ui.Modal, title="Conferma Preordine"):
         max_length=50,
         required=True
     )
-    
+     
     quantita = discord.ui.TextInput(
         label="Quantità desiderata",
         placeholder="Es. 1, 2, 3...",
@@ -184,7 +184,7 @@ class ClaimModal(discord.ui.Modal, title="Conferma Preordine"):
     async def on_submit(self, interaction: discord.Interaction):
         try:
             await interaction.response.defer(ephemeral=True)
-            
+             
             try:
                 qty = int(self.quantita.value)
                 if qty <= 0:
@@ -229,7 +229,7 @@ class ClaimModal(discord.ui.Modal, title="Conferma Preordine"):
                 embed.add_field(name="Totale", value=total_str, inline=True)
                 embed.add_field(name="Stato Attuale", value="⏳ `in_arrivo`", inline=False)
                 embed.timestamp = datetime.now()
-                
+                 
                 await admin_channel.send(embed=embed)
 
         except Exception as e:
@@ -294,7 +294,7 @@ class SingleOrderManagementView(discord.ui.View):
         cursor.close()
         conn.close()
 
-        await interaction.response.send_message(f"🗑️ L'ordine è stato eliminato con successo dal database.", ephemeral=True)
+        await interaction.response.send_message(f"🗑️️ L'ordine è stato eliminato con successo dal database.", ephemeral=True)
 
 class OrderManagementView(discord.ui.View):
     def __init__(self, orders):
@@ -307,7 +307,7 @@ class OrderManagementView(discord.ui.View):
                 description=f"Cliente: {cliente} | Qty: {quantita} | Stato: {stato}",
                 value=str(oid)
             ))
-        
+         
         class SelectOrder(discord.ui.Select):
             def __init__(self, opts):
                 super().__init__(placeholder="Seleziona un ordine da gestire...", min_values=1, max_values=1, options=opts)
@@ -330,7 +330,7 @@ class OrderManagementView(discord.ui.View):
         csv_content = "ID;Cliente;Prodotto;Quantita;Prezzo Unitario;Stato;Messaggio;Data\n"
         for r in rows:
             csv_content += f"{r[0]};{r[1]};\"{r[2]}\";{r[3]};{r[4]};{r[5]};\"{r[6]}\";{r[7]}\n"
-        
+         
         file_bytes = io.BytesIO(csv_content.encode('utf-8'))
         await interaction.response.send_message("Ecco il file di esportazione completo degli ordini:", file=discord.File(file_bytes, filename="ordini.csv"), ephemeral=True)
 
@@ -338,7 +338,7 @@ class OrderManagementView(discord.ui.View):
 def get_discord_channel_id(text):
     if not text:
         return CHANNEL_ALTRO
-    
+     
     text_lower = text.lower()
     if "#pokemon" in text_lower:
         return CHANNEL_POKEMON
@@ -354,44 +354,42 @@ def get_discord_channel_id(text):
 def is_valid_product_message(text):
     if not text:
         return False
-    
+     
     text_lower = text.lower()
     has_hashtag = bool(re.search(r'#\w+', text_lower))
     if not has_hashtag:
         return False
-        
+         
     if not re.search(r'\d+([.,]\d{2})?\s*€', text):
         return False
-        
+         
     return True
 
 def clean_message_text(text):
     if not text:
         return "", "", ""
-    
+     
     lines = text.split('\n')
     cleaned_lines = []
     product_title = "Prodotto Preorder"
     product_price = "N/D"
-    
+     
     for i, line in enumerate(lines):
         line_str = line.strip()
-        
-        # Rimuove l'hashtag ovunque si trovi
+         
         line_str = re.sub(r'#\w+', '', line_str).strip()
-        
-        # Se la riga è vuota, la manteniamo per preservare gli spazi tra i paragrafi
+         
         if not line_str:
             cleaned_lines.append("")
             continue
-            
+             
         if (
             "Per prenotare" in line_str or 
             "/claim" in line_str or 
             "Offerto da" in line_str
         ):
             continue
-            
+             
         if i == 0 and line_str:
             product_title = line_str
 
@@ -410,7 +408,7 @@ def clean_message_text(text):
                     price += 20
                 elif price >= 300:
                     price += 30
-                
+                 
                 formatted_price = f"{price:.2f}".replace('.', ',') + " €"
                 if product_price == "N/D":
                     product_price = formatted_price
@@ -420,12 +418,13 @@ def clean_message_text(text):
 
         updated_line = re.sub(r'(\d+([.,]\d{2})?)\s*€', replace_price, line_str)
         cleaned_lines.append(updated_line)
-    
+     
     result = "\n".join(cleaned_lines).strip()
     if result:
         result = f"{result}\n──────────────────────────────"
-        
+         
     return result, product_title, product_price
+
 @tasks.loop(time=time(hour=9, minute=0, tzinfo=timezone.utc))
 async def recap_giornaliero():
     admin_channel = bot.get_channel(CHANNEL_ADMIN_LOGS)
@@ -482,12 +481,13 @@ tg_client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
 
 @tg_client.on(events.Album(chats=TELEGRAM_CHANNEL))
 async def album_handler(event):
+    print(f"ID della chat corrente (Album): {event.chat_id}", flush=True)
     text = ""
     for message in event.messages:
         if message.raw_text:
             text = message.raw_text
             break
-    
+     
     if not is_valid_product_message(text):
         return
 
@@ -502,7 +502,7 @@ async def album_handler(event):
             path = await message.download_media(file=f'temp_img_{i}.jpg')
             if path:
                 discord_files.append(discord.File(path))
-    
+     
     cleaned, title, price = clean_message_text(text)
 
     if discord_files:
@@ -513,19 +513,19 @@ async def album_handler(event):
                 os.remove(f.fp.name)
             except:
                 pass
-        
+         
     if cleaned:
         view = ClaimView(title, price)
         await channel.send(content=cleaned, view=view)
 
 @tg_client.on(events.NewMessage(chats=TELEGRAM_CHANNEL))
 async def single_handler(event):
-    print(f"ID della chat corrente: {event.chat_id}", flush=True)
+    print(f"ID della chat corrente (Singolo): {event.chat_id}", flush=True)
     if event.grouped_id:
         return
-        
+         
     text = event.raw_text or ""
-    
+     
     if not is_valid_product_message(text):
         return
 
@@ -535,7 +535,7 @@ async def single_handler(event):
         return
 
     cleaned, title, price = clean_message_text(text)
-    
+     
     if event.photo:
         path = await event.download_media(file='temp_single.jpg')
         if path:
@@ -546,24 +546,30 @@ async def single_handler(event):
                 os.remove(path)
             except:
                 pass
-            
+             
         if cleaned:
             view = ClaimView(title, price)
             await channel.send(content=cleaned, view=view)
     elif cleaned:
         view = ClaimView(title, price)
         await channel.send(content=cleaned, view=view)
+
 @tg_client.on(events.NewMessage)
 async def debug_all_messages(event):
     print(f"DEBUG - Messaggio ricevuto da chat ID: {event.chat_id} | Testo: {event.raw_text[:30]}", flush=True)
+
 @bot.event
 async def on_ready():
     print(f"Bot Discord connesso come {bot.user}", flush=True)
     if not recap_giornaliero.is_running():
         recap_giornaliero.start()
+        
     if not tg_client.is_connected():
-        await tg_client.start()
-        print("Userbot Telegram avviato e in ascolto...", flush=True)
+        try:
+            await tg_client.start()
+            print("Userbot Telegram avviato e in ascolto...", flush=True)
+        except Exception as e:
+            print(f"Errore nell'avvio dello userbot Telegram: {e}", flush=True)
 
 if __name__ == "__main__":
     if not DISCORD_TOKEN:
