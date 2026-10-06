@@ -3,6 +3,7 @@ import threading
 import asyncio
 import re
 import random
+import uuid
 import sqlite3
 from datetime import datetime, time, timezone
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -18,6 +19,9 @@ is_postgres = bool(DATABASE_URL)
 if is_postgres:
     import psycopg2
     import io
+
+# Dizionario globale per tracciare l'ultima versione attiva di ciascun prodotto (per invalidare i vecchi repost)
+active_product_versions = {}
 
 # 1. Server web per Render
 class SimpleHandler(BaseHTTPRequestHandler):
@@ -142,7 +146,6 @@ def save_order(input_cliente, product_name, price, quantity):
         ''', (codice_cliente, product_name, int(quantity), numeric_price, messaggio_str, timestamp))
         order_id = cursor.fetchone()[0]
     else:
-        import uuid
         order_id = str(uuid.uuid4())
         cursor.execute('''
             INSERT INTO ordini (id, cliente, prodotto, quantita, prezzo_unitario, stato, messaggio, created_at)
@@ -242,15 +245,21 @@ class ClaimModal(discord.ui.Modal, title="Conferma Preordine"):
                 pass
 
 class ClaimView(discord.ui.View):
-    def __init__(self, product_name, price, start_time=None, end_time=None):
+    def __init__(self, product_name, price, start_time=None, end_time=None, post_token=None):
         super().__init__(timeout=86400)
         self.product_name = product_name
         self.price = price
         self.start_time = start_time
         self.end_time = end_time
+        self.post_token = post_token
 
     @discord.ui.button(label="🛒 CLAIM", style=discord.ButtonStyle.success)
     async def claim_button_callback(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Controllo se questo post è stato superato da un nuovo repost con dettagli differenti
+        if self.post_token and active_product_versions.get(self.product_name) != self.post_token:
+            await interaction.response.send_message("❌ Questo annuncio è stato aggiornato o ripostato con nuovi dettagli! Usa il pulsante nel messaggio più recente.", ephemeral=True)
+            return
+
         now = datetime.now()
         
         # Controllo validità temporale basato sulle date estratte dal testo
@@ -519,7 +528,12 @@ async def debug_all_messages(event):
         if channel:
             cleaned, title, price = clean_message_text(text)
             start_dt, end_dt = extract_dates(text)
-            view = ClaimView(title, price, start_dt, end_dt)
+            
+            # Genera un token univoco per questa specifica versione/repost del prodotto
+            post_token = str(uuid.uuid4())
+            active_product_versions[title] = post_token
+            
+            view = ClaimView(title, price, start_dt, end_dt, post_token)
              
             # Invio prima la foto (se presente) e poi il testo con il pulsante Claim
             if event.photo:
