@@ -42,7 +42,7 @@ DISCORD_TOKEN = os.environ.get('DISCORD_TOKEN', '')
 
 # ID Canali Discord ufficiali e Webhook
 CHANNEL_ADMIN_LOGS = 1533540767396794479
-CHANNEL_POKEMON = 1557072021215776768
+CHANNEL_POKEMON = 1547376481477459988
 CHANNEL_ONEPIECE = 1532111869832069242
 CHANNEL_DRAGONBALL = 1532112469567471938
 CHANNEL_PREORDER = 1532029845481984260
@@ -483,7 +483,6 @@ tg_client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
 async def debug_all_messages(event):
     print(f"DEBUG GLOBALE - Chat ID: {event.chat_id} | Testo: {event.raw_text}", flush=True)
     
-    # Filtriamo solo per il nostro canale corretto
     if event.chat_id != TELEGRAM_CHANNEL:
         return
 
@@ -495,14 +494,19 @@ async def debug_all_messages(event):
         if channel:
             cleaned, title, price = clean_message_text(text)
             view = ClaimView(title, price)
+            
+            # Invio prima la foto (se presente) e poi il testo con il pulsante Claim
             if event.photo:
                 path = await event.download_media(file='temp_test.jpg')
                 if path:
-                    await channel.send(file=discord.File(path), content=cleaned, view=view)
+                    await channel.send(file=discord.File(path))
+                    await asyncio.sleep(1.0)
                     os.remove(path)
-            elif cleaned:
+             
+            if cleaned:
                 await channel.send(content=cleaned, view=view)
-            print("-> Inviato con successo su Discord!", flush=True)
+                
+            print("-> Inviato con successo su Discord (Foto prima, poi Testo)!", flush=True)
         else:
             print(f"-> ERRORE: Canale Discord non trovato per ID {target_channel_id}!", flush=True)
     else:
