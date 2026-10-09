@@ -129,7 +129,7 @@ def trova_o_genera_codice_cliente(input_cliente):
     conn.close()
     return nuovo_codice
 
-def save_order(input_cliente, product_name, price, quantity):
+def save_order(input_cliente, product_name, price, quantity, initial_status='in_arrivo'):
     conn = get_db_connection()
     cursor = conn.cursor()
      
@@ -146,15 +146,15 @@ def save_order(input_cliente, product_name, price, quantity):
     if is_postgres:
         cursor.execute('''
             INSERT INTO ordini (cliente, prodotto, quantita, prezzo_unitario, stato, messaggio, created_at)
-            VALUES (%s, %s, %s, %s, 'in_arrivo', %s, %s) RETURNING id
-        ''', (codice_cliente, product_name, int(quantity), numeric_price, messaggio_str, timestamp))
+            VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id
+        ''', (codice_cliente, product_name, int(quantity), numeric_price, initial_status, messaggio_str, timestamp))
         order_id = cursor.fetchone()[0]
     else:
         order_id = str(uuid.uuid4())
         cursor.execute('''
             INSERT INTO ordini (id, cliente, prodotto, quantita, prezzo_unitario, stato, messaggio, created_at)
-            VALUES (?, ?, ?, ?, ?, 'in_arrivo', ?, ?)
-        ''', (order_id, codice_cliente, product_name, int(quantity), numeric_price, messaggio_str, timestamp))
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (order_id, codice_cliente, product_name, int(quantity), numeric_price, initial_status, messaggio_str, timestamp))
          
     conn.commit()
     cursor.close()
@@ -165,6 +165,46 @@ def save_order(input_cliente, product_name, price, quantity):
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
+
+class OrderApprovalView(discord.ui.View):
+    def __init__(self, discord_user, nome_inserito, codice_cliente, product_name, qty, price, total_str):
+        super().__init__(timeout=None)
+        self.discord_user = discord_user
+        self.nome_inserito = nome_inserito
+        self.codice_cliente = codice_cliente
+        self.product_name = product_name
+        self.qty = qty
+        self.price = price
+        self.total_str = total_str
+
+    @discord.ui.button(label="Conferma Pagamento", style=discord.ButtonStyle.success, emoji="✅")
+    async def confirm_payment(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Salva l'ordine nel database con stato 'pagato'
+        order_id, _ = save_order(self.nome_inserito, self.product_name, self.price, self.qty, initial_status='pagato')
+        
+        # Disattiva i pulsanti
+        for child in self.children:
+            child.disabled = True
+            
+        embed = interaction.message.embeds[0]
+        embed.color = discord.Color.green()
+        embed.set_field_at(index=6, name="Stato Attuale", value="💳 `pagato` (Confermato)", inline=False)
+        
+        await interaction.message.edit(embed=embed, view=self)
+        await interaction.response.send_message(f"✅ Pagamento confermato e ordine salvato nel database per {self.nome_inserito}.", ephemeral=True)
+
+    @discord.ui.button(label="Annulla Ordine", style=discord.ButtonStyle.danger, emoji="❌")
+    async def cancel_order(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Disattiva i pulsanti e aggiorna l'embed senza salvare nel database
+        for child in self.children:
+            child.disabled = True
+            
+        embed = interaction.message.embeds[0]
+        embed.color = discord.Color.red()
+        embed.set_field_at(index=6, name="Stato Attuale", value="❌ `annullato` (Non disponibile / Scaduto)", inline=False)
+        
+        await interaction.message.edit(embed=embed, view=self)
+        await interaction.response.send_message("❌ Ordine annullato con successo.", ephemeral=True)
 
 class ClaimModal(discord.ui.Modal, title="Conferma Preordine"):
     cliente_input = discord.ui.TextInput(
@@ -209,7 +249,8 @@ class ClaimModal(discord.ui.Modal, title="Conferma Preordine"):
             except ValueError:
                 total_str = "N/D"
 
-            order_id, codice_cliente = save_order(nome_inserito, self.product_name, self.price, qty)
+            # Genera solo il codice cliente temporaneo senza salvare ancora nel DB
+            codice_cliente = trova_o_genera_codice_cliente(nome_inserito)
 
             await interaction.followup.send(
                 f"✅ **Ordine registrato con successo!**\n\n"
@@ -219,28 +260,28 @@ class ClaimModal(discord.ui.Modal, title="Conferma Preordine"):
                 f"💰 **Prezzo unitario:** {self.price}\n"
                 f"💵 **Totale da pagare:** {total_str}\n\n"
                 f"💳 **Metodi di pagamento:**\n"
-                f"• **Revolut / PayPal:** `@aleerendaa`\n"
-                f"• **Bonifico:** Alessio Renda `IT33 R036 6901 6008 8620 5292 086`",
+                f"• **PayPal:** `@aleerendaa`",
                 ephemeral=True
             )
 
-            # Notifica nel canale ordini privato (#ordini)
+            # Notifica nel canale ordini privato (#ordini) con stato "Da pagare" e pulsanti di gestione
             ordini_channel = bot.get_channel(CHANNEL_ORDINI)
             if ordini_channel:
-                embed = discord.Embed(title=f"🛒 Nuovo Claim Ricevuto!", color=discord.Color.gold())
+                embed = discord.Embed(title=f"🛒 Nuovo Claim Ricevuto!", color=discord.Color.orange())
                 embed.add_field(name="Discord User", value=f"{interaction.user.mention} ({interaction.user.name})", inline=False)
                 embed.add_field(name="Cliente / Codice", value=f"{nome_inserito} (`{codice_cliente}`)", inline=False)
                 embed.add_field(name="Prodotto", value=self.product_name, inline=False)
                 embed.add_field(name="Quantità", value=str(qty), inline=True)
                 embed.add_field(name="Prezzo Unitario", value=self.price, inline=True)
                 embed.add_field(name="Totale", value=total_str, inline=True)
-                embed.add_field(name="Stato Attuale", value="⏳ `in_arrivo`", inline=False)
+                embed.add_field(name="Stato Attuale", value="⏳ `Da pagare`", inline=False)
                 embed.timestamp = datetime.now()
                  
-                await ordini_channel.send(embed=embed)
+                approval_view = OrderApprovalView(interaction.user, nome_inserito, codice_cliente, self.product_name, qty, self.price, total_str)
+                await ordini_channel.send(embed=embed, view=approval_view)
 
         except Exception as e:
-            print(f"ERRORE CRITICO durante il salvataggio del claim: {e}", flush=True)
+            print(f"ERRORE CRITICO durante il claim: {e}", flush=True)
             import traceback
             traceback.print_exc()
             try:
@@ -259,14 +300,12 @@ class ClaimView(discord.ui.View):
 
     @discord.ui.button(label="🛒 CLAIM", style=discord.ButtonStyle.success)
     async def claim_button_callback(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Controllo se questo post è stato superato da un nuovo repost con dettagli differenti
         if self.post_token and active_product_versions.get(self.product_name) != self.post_token:
             await interaction.response.send_message("❌ Questo annuncio è stato aggiornato o ripostato con nuovi dettagli! Usa il pulsante nel messaggio più recente.", ephemeral=True)
             return
 
         now = datetime.now(ITALY_TZ)
         
-        # Controllo validità temporale basato sulle date estratte dal testo (confrontate in orario italiano)
         if self.start_time and now < self.start_time:
             await interaction.response.send_message(f"⏳ I preordini per questo prodotto non sono ancora aperti!\nInizio previsto: {self.start_time.strftime('%d/%m/%Y alle %H:%M')}", ephemeral=True)
             return
@@ -412,8 +451,6 @@ def clean_message_text(text):
     product_price = "N/D"
      
     for i, line in enumerate(lines):
-        line_str = line.strip()
-         
         line_str = re.sub(r'#\w+', '', line)
         line_str = re.sub(r'🇯🇵', '', line_str).strip()
          
@@ -475,7 +512,6 @@ async def recap_giornaliero():
     conn = get_db_connection()
     cursor = conn.cursor()
     
-    # Seleziona solo gli ordini registrati nelle ultime 24 ore
     if is_postgres:
         cursor.execute("SELECT id, cliente, prodotto, quantita, prezzo_unitario, stato, messaggio, created_at FROM ordini WHERE created_at >= NOW() - INTERVAL '24 hours' ORDER BY created_at DESC")
     else:
@@ -542,13 +578,11 @@ async def debug_all_messages(event):
             cleaned, title, price = clean_message_text(text)
             start_dt, end_dt = extract_dates(text)
             
-            # Genera un token univoco per questa specifica versione/repost del prodotto
             post_token = str(uuid.uuid4())
             active_product_versions[title] = post_token
             
             view = ClaimView(title, price, start_dt, end_dt, post_token)
              
-            # Invio prima la foto (se presente) e poi il testo con il pulsante Claim
             if event.photo:
                 path = await event.download_media(file='temp_test.jpg')
                 if path:
