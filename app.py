@@ -411,13 +411,16 @@ def clean_message_text(text):
     product_price = "N/D"
      
     for i, line in enumerate(lines):
-        line_str = line.strip()
+        # Rimuove solo la bandiera giapponese e gli hashtag, lasciando inalterati gli spazi
+        line_str = re.sub(r'#\w+', '', line)
+        line_str = re.sub(r'🇯🇵', '', line_str).strip()
          
-        # Rimuove hashtag e bandiere/emoji (es. 🇯🇵)
-        line_str = re.sub(r'#\w+', '', line_str)
-        line_str = re.sub(r'[\U0001F1E0-\U0001F1FF]', '', line_str).strip()
+        # Se la riga era composta solo dalla bandiera, saltala per evitare righe vuote inutili
+        if line.strip() == "🇯🇵" or line.strip() == "#giapponese":
+            continue
          
         if not line_str:
+            cleaned_lines.append("")
             continue
              
         if (
