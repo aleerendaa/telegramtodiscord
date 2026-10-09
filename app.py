@@ -391,7 +391,6 @@ def is_valid_product_message(text):
     return True
 
 def extract_dates(text):
-    # Estrae date del tipo: "dal 05/10/2026, 18:12 fino al 12/10/2026, 12:00" e applica il fuso orario italiano
     match = re.search(r'dal\s+(\d{2}/\d{2}/\d{4},\s*\d{2}:\d{2})\s+fino\s+al\s+(\d{2}/\d{2}/\d{4},\s*\d{2}:\d{2})', text, re.IGNORECASE)
     start_dt, end_dt = None, None
     if match:
@@ -414,10 +413,11 @@ def clean_message_text(text):
     for i, line in enumerate(lines):
         line_str = line.strip()
          
-        line_str = re.sub(r'#\w+', '', line_str).strip()
+        # Rimuove hashtag e bandiere/emoji (es. 🇯🇵)
+        line_str = re.sub(r'#\w+', '', line_str)
+        line_str = re.sub(r'[\U0001F1E0-\U0001F1FF]', '', line_str).strip()
          
         if not line_str:
-            cleaned_lines.append("")
             continue
              
         if (
