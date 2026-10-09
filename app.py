@@ -49,6 +49,7 @@ DISCORD_TOKEN = os.environ.get('DISCORD_TOKEN', '')
 
 # ID Canali Discord ufficiali e Webhook
 CHANNEL_ADMIN_LOGS = 1533540767396794479
+CHANNEL_ORDINI = 1558069027329540156
 CHANNEL_POKEMON = 1557072021215776768
 CHANNEL_ONEPIECE = 1532111869832069242
 CHANNEL_DRAGONBALL = 1532112469567471938
@@ -223,9 +224,9 @@ class ClaimModal(discord.ui.Modal, title="Conferma Preordine"):
                 ephemeral=True
             )
 
-            # Notifica nel canale admin log (#modlogs)
-            admin_channel = bot.get_channel(CHANNEL_ADMIN_LOGS)
-            if admin_channel:
+            # Notifica nel canale ordini privato (#ordini)
+            ordini_channel = bot.get_channel(CHANNEL_ORDINI)
+            if ordini_channel:
                 embed = discord.Embed(title=f"🛒 Nuovo Claim Ricevuto!", color=discord.Color.gold())
                 embed.add_field(name="Discord User", value=f"{interaction.user.mention} ({interaction.user.name})", inline=False)
                 embed.add_field(name="Cliente / Codice", value=f"{nome_inserito} (`{codice_cliente}`)", inline=False)
@@ -236,7 +237,7 @@ class ClaimModal(discord.ui.Modal, title="Conferma Preordine"):
                 embed.add_field(name="Stato Attuale", value="⏳ `in_arrivo`", inline=False)
                 embed.timestamp = datetime.now()
                  
-                await admin_channel.send(embed=embed)
+                await ordini_channel.send(embed=embed)
 
         except Exception as e:
             print(f"ERRORE CRITICO durante il salvataggio del claim: {e}", flush=True)
@@ -411,11 +412,11 @@ def clean_message_text(text):
     product_price = "N/D"
      
     for i, line in enumerate(lines):
-        # Rimuove solo la bandiera giapponese e gli hashtag, lasciando inalterati gli spazi
+        line_str = line.strip()
+         
         line_str = re.sub(r'#\w+', '', line)
         line_str = re.sub(r'🇯🇵', '', line_str).strip()
          
-        # Se la riga era composta solo dalla bandiera, saltala per evitare righe vuote inutili
         if line.strip() == "🇯🇵" or line.strip() == "#giapponese":
             continue
          
@@ -467,23 +468,29 @@ def clean_message_text(text):
 
 @tasks.loop(time=time(hour=9, minute=0, tzinfo=timezone.utc))
 async def recap_giornaliero():
-    admin_channel = bot.get_channel(CHANNEL_ADMIN_LOGS)
+    admin_channel = bot.get_channel(CHANNEL_ORDINI)
     if not admin_channel:
         return
 
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT id, cliente, prodotto, quantita, prezzo_unitario, stato, messaggio, created_at FROM ordini WHERE stato != 'consegnato' ORDER BY created_at DESC LIMIT 25")
+    
+    # Seleziona solo gli ordini registrati nelle ultime 24 ore
+    if is_postgres:
+        cursor.execute("SELECT id, cliente, prodotto, quantita, prezzo_unitario, stato, messaggio, created_at FROM ordini WHERE created_at >= NOW() - INTERVAL '24 hours' ORDER BY created_at DESC")
+    else:
+        cursor.execute("SELECT id, cliente, prodotto, quantita, prezzo_unitario, stato, messaggio, created_at FROM ordini WHERE datetime(created_at) >= datetime('now', '-1 day') ORDER BY created_at DESC")
+        
     rows = cursor.fetchall()
     cursor.close()
     conn.close()
 
     if not rows:
-        embed = discord.Embed(title="📊 Recap Giornaliero Ordini", description="Ottimo! Non ci sono ordini in sospeso (tutti consegnati).", color=discord.Color.green())
+        embed = discord.Embed(title="📊 Recap Giornaliero Ordini", description="Nessun nuovo ordine registrato nelle ultime 24 ore.", color=discord.Color.green())
         await admin_channel.send(embed=embed)
         return
 
-    embed = discord.Embed(title="📊 Recap Giornaliero Ordini in Sospeso", color=discord.Color.orange(), timestamp=datetime.now())
+    embed = discord.Embed(title="📊 Recap Giornaliero Ordini (Ultime 24h)", color=discord.Color.orange(), timestamp=datetime.now())
     for row in rows:
         oid, cliente, prodotto, quantita, prezzo_unitario, stato, messaggio, created_at = row
         status_icon = "⏳" if stato == "in_arrivo" else ("💳" if stato == "pagato" else "🚚")
