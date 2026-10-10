@@ -136,7 +136,7 @@ def save_order(input_cliente, product_name, price, quantity, initial_status='in_
     codice_cliente = trova_o_genera_codice_cliente(input_cliente)
      
     try:
-        numeric_price = float(price.replace('€', '').strip().replace(',', '.'))
+        numeric_price = float(str(price).replace('€', '').strip().replace(',', '.'))
     except ValueError:
         numeric_price = 0.0
 
@@ -161,6 +161,43 @@ def save_order(input_cliente, product_name, price, quantity, initial_status='in_
     conn.close()
     return order_id, codice_cliente
 
+# Funzione per generare l'embed/testo del recap giornaliero
+async def invia_recap_giornaliero_logic(target_channel):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    if is_postgres:
+        cursor.execute("SELECT id, cliente, prodotto, quantita, prezzo_unitario, stato, messaggio, created_at FROM ordini WHERE created_at >= NOW() - INTERVAL '24 hours' ORDER BY created_at DESC")
+    else:
+        cursor.execute("SELECT id, cliente, prodotto, quantita, prezzo_unitario, stato, messaggio, created_at FROM ordini WHERE datetime(created_at) >= datetime('now', '-1 day') ORDER BY created_at DESC")
+        
+    rows = cursor.fetchall()
+    cursor.close()
+    conn.close()
+
+    if not rows:
+        embed = discord.Embed(title="📊 Recap Giornaliero Ordini", description="Nessun nuovo ordine registrato nelle ultime 24 ore.", color=discord.Color.green())
+        await target_channel.send(embed=embed)
+        return
+
+    embed = discord.Embed(title="📊 Recap Giornaliero Ordini (Ultime 24h)", color=discord.Color.orange(), timestamp=datetime.now())
+    for row in rows:
+        oid, cliente, prodotto, quantita, prezzo_unitario, stato, messaggio, created_at = row
+        status_icon = "⏳" if stato == "in_arrivo" else ("💳" if stato == "pagato" else "🚚")
+        embed.add_field(
+            name=f"{prodotto} (x{quantita})",
+            value=f"👤 Cliente: {cliente} | 💰 Unitario: {prezzo_unitario} €\nStato: {status_icon} **{stato}** | 🕒 {created_at}",
+            inline=False
+        )
+    await target_channel.send(embed=embed)
+
+@tasks.loop(time=time(hour=0, minute=0, tzinfo=timezone.utc))
+async def recap_giornaliero():
+    admin_channel = bot.get_channel(CHANNEL_ORDINI)
+    if not admin_channel:
+        return
+    await invia_recap_giornaliero_logic(admin_channel)
+
 # 3. Configurazione Bot Discord e View per Admin
 intents = discord.Intents.default()
 intents.message_content = True
@@ -180,10 +217,8 @@ class OrderApprovalView(discord.ui.View):
     @discord.ui.button(label="Conferma Pagamento", style=discord.ButtonStyle.success, emoji="✅")
     async def confirm_payment(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
-        # Salva l'ordine nel database con stato 'pagato'
         order_id, _ = save_order(self.nome_inserito, self.product_name, self.price, self.qty, initial_status='pagato')
         
-        # Disattiva i pulsanti
         for child in self.children:
             child.disabled = True
             
@@ -197,7 +232,6 @@ class OrderApprovalView(discord.ui.View):
     @discord.ui.button(label="Annulla Ordine", style=discord.ButtonStyle.danger, emoji="❌")
     async def cancel_order(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
-        # Disattiva i pulsanti e aggiorna l'embed senza salvare nel database
         for child in self.children:
             child.disabled = True
             
@@ -219,39 +253,6 @@ class ClaimView(discord.ui.View):
 
     @discord.ui.button(label="🛒 CLAIM", style=discord.ButtonStyle.success)
     async def claim_button_callback(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Impedisce l'errore "ClaimBot non ha risposto in tempo"
-        await interaction.response.defer(ephemeral=True)
-
-        if self.post_token and active_product_versions.get(self.product_name) != self.post_token:
-            await interaction.followup.send("❌ Questo annuncio è stato aggiornato o ripostato con nuovi dettagli! Usa il pulsante nel messaggio più recente.", ephemeral=True)
-            return
-
-        now = datetime.now(ITALY_TZ)
-        
-        if self.start_time and now < self.start_time:
-            await interaction.followup.send(f"⏳ I preordini per questo prodotto non sono ancora aperti!\nInizio previsto: {self.start_time.strftime('%d/%m/%Y alle %H:%M')}", ephemeral=True)
-            return
-            
-        if self.end_time and now > self.end_time:
-            await interaction.followup.send(f"❌ I claim per questo prodotto sono chiusi, scadenza {self.end_time.strftime('%d/%m/%Y alle %H:%M')}, richiedi questo prodotto in <#1531772977073356881> e se disponibile sarà postato", ephemeral=True)
-            return
-
-        # Invio del Modale tramite l'interazione differita (usando followup o inviando direttamente la modale se supportata)
-        # Nota: Le modali in Discord richiedono interaction.response.send_modal, che funziona se non è stato fatto un defer precedente.
-        # Per evitare problemi con il defer e le modali, gestiamo la risposta diretta con la modale o rimuoviamo il defer per il click del bottone principale.
-
-# Correggiamo la gestione del click del bottone per aprire subito la modale senza defer (la modale risponde entro 3 secondi)
-class ClaimView(discord.ui.View):
-    def __init__(self, product_name, price, start_time=None, end_time=None, post_token=None):
-        super().__init__(timeout=86400)
-        self.product_name = product_name
-        self.price = price
-        self.start_time = start_time
-        self.end_time = end_time
-        self.post_token = post_token
-
-    @discord.ui.button(label="🛒 CLAIM", style=discord.ButtonStyle.success)
-    async def claim_button_callback(self, interaction: discord.Interaction, button: discord.ui.Button):
         if self.post_token and active_product_versions.get(self.product_name) != self.post_token:
             await interaction.response.send_message("❌ Questo annuncio è stato aggiornato o ripostato con nuovi dettagli! Usa il pulsante nel messaggio più recente.", ephemeral=True)
             return
@@ -259,7 +260,7 @@ class ClaimView(discord.ui.View):
         now = datetime.now(ITALY_TZ)
         
         if self.start_time and now < self.start_time:
-            await interaction.response.send_message(f"⏳ I preordini per questo prodotto non sono ancora aperti!\nInizio previsto: {self.start_time.strftime('%d/%m/%Y alle %H:%M')}", ephemeral=True)
+            await interaction.response.send_message(f"⏳ I preordini per這個 prodotto non sono ancora aperti!\nInizio previsto: {self.start_time.strftime('%d/%m/%Y alle %H:%M')}", ephemeral=True)
             return
             
         if self.end_time and now > self.end_time:
@@ -292,7 +293,6 @@ class ClaimModal(discord.ui.Modal, title="Conferma Preordine"):
         self.price = price
 
     async def on_submit(self, interaction: discord.Interaction):
-        # Usiamo il defer immediato qui dentro per avere fino a 15 minuti di tempo per completare le operazioni pesanti
         await interaction.response.defer(ephemeral=True)
         try:
             try:
@@ -306,7 +306,7 @@ class ClaimModal(discord.ui.Modal, title="Conferma Preordine"):
             nome_inserito = self.cliente_input.value.strip()
 
             try:
-                numeric_price = float(self.price.replace('€', '').strip().replace(',', '.'))
+                numeric_price = float(str(self.price).replace('€', '').strip().replace(',', '.'))
                 total_price = numeric_price * qty
                 total_str = f"{total_price:.2f}".replace('.', ',') + " €"
             except ValueError:
@@ -432,6 +432,12 @@ class OrderManagementView(discord.ui.View):
         file_bytes = io.BytesIO(csv_content.encode('utf-8'))
         await interaction.response.send_message("Ecco il file di esportazione completo degli ordini:", file=discord.File(file_bytes, filename="ordini.csv"), ephemeral=True)
 
+    @discord.ui.button(label="📊 Genera Recap Ora", style=discord.ButtonStyle.primary, emoji="🕒", row=1)
+    async def manual_recap_callback(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        await invia_recap_giornaliero_logic(interaction.channel)
+        await interaction.followup.send("✅ Recap generato con successo!", ephemeral=True)
+
 # 4. Logica di Smistamento, Markup e Validazione con hashtag
 def get_discord_channel_id(text):
     if not text:
@@ -536,40 +542,6 @@ def clean_message_text(text):
          
     return result, product_title, product_price
 
-@tasks.loop(time=time(hour=9, minute=0, tzinfo=timezone.utc))
-async def recap_giornaliero():
-    admin_channel = bot.get_channel(CHANNEL_ORDINI)
-    if not admin_channel:
-        return
-
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    if is_postgres:
-        cursor.execute("SELECT id, cliente, prodotto, quantita, prezzo_unitario, stato, messaggio, created_at FROM ordini WHERE created_at >= NOW() - INTERVAL '24 hours' ORDER BY created_at DESC")
-    else:
-        cursor.execute("SELECT id, cliente, prodotto, quantita, prezzo_unitario, stato, messaggio, created_at FROM ordini WHERE datetime(created_at) >= datetime('now', '-1 day') ORDER BY created_at DESC")
-        
-    rows = cursor.fetchall()
-    cursor.close()
-    conn.close()
-
-    if not rows:
-        embed = discord.Embed(title="📊 Recap Giornaliero Ordini", description="Nessun nuovo ordine registrato nelle ultime 24 ore.", color=discord.Color.green())
-        await admin_channel.send(embed=embed)
-        return
-
-    embed = discord.Embed(title="📊 Recap Giornaliero Ordini (Ultime 24h)", color=discord.Color.orange(), timestamp=datetime.now())
-    for row in rows:
-        oid, cliente, prodotto, quantita, prezzo_unitario, stato, messaggio, created_at = row
-        status_icon = "⏳" if stato == "in_arrivo" else ("💳" if stato == "pagato" else "🚚")
-        embed.add_field(
-            name=f"{prodotto} (x{quantita})",
-            value=f"👤 Cliente: {cliente} | 💰 Unitario: {prezzo_unitario} €\nStato: {status_icon} **{stato}** | 🕒 {created_at}",
-            inline=False
-        )
-    await admin_channel.send(embed=embed)
-
 @bot.command(name="menu")
 @commands.has_permissions(administrator=True)
 async def menu_ordini(ctx):
@@ -586,11 +558,50 @@ async def menu_ordini(ctx):
 
     embed = discord.Embed(
         title="📊 Menu Gestione Ordini", 
-        description="Usa il menu a tendina per selezionare un ordine da modificare o eliminare, oppure clicca sul pulsante sottostante per scaricare il report completo.", 
+        description="Usa il menu a tendina per selezionare un ordine da modificare o eliminare, oppure clicca sui pulsanti sottostanti per scaricare il report o generare il recap.", 
         color=discord.Color.blue()
     )
     view = OrderManagementView(rows)
     await ctx.send(embed=embed, view=view)
+
+# Comando per creare un prodotto manualmente da Discord
+class CreaProdottoModal(discord.ui.Modal, title="Crea Nuovo Prodotto"):
+    titolo = discord.ui.TextInput(label="Nome del Prodotto", placeholder="Es. 30th Celebration Booster Box", required=True)
+    descrizione = discord.ui.TextInput(label="Descrizione e Prezzo", placeholder="Es. Sealed\n205,00 € • 15 disponibili", style=discord.TextStyle.paragraph, required=True)
+    hashtag = discord.ui.TextInput(label="Canale / Categoria (Hashtag)", placeholder="Es. #pokemon, #onepiece, #dragonball...", required=True)
+    date_validita = discord.ui.TextInput(label="Periodo Validità", placeholder="dal 10/10/2026, 12:00 fino al 15/10/2026, 23:00", required=True)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        
+        full_text = f"{self.titolo.value}\n\n{self.descrizione.value}\n\nOrdinazioni aperte {self.date_validita.value}\n\n{self.hashtag.value}"
+        
+        target_channel_id = get_discord_channel_id(full_text)
+        channel = bot.get_channel(target_channel_id)
+        
+        if not channel:
+            await interaction.followup.send("❌ Canale Discord di destinazione non trovato per questo hashtag.", ephemeral=True)
+            return
+
+        cleaned, title, price = clean_message_text(full_text)
+        start_dt, end_dt = extract_dates(full_text)
+        
+        post_token = str(uuid.uuid4())
+        active_product_versions[title] = post_token
+        
+        view = ClaimView(title, price, start_dt, end_dt, post_token)
+        
+        if cleaned:
+            await channel.send(content=cleaned, view=view)
+            await interaction.followup.send("✅ Prodotto creato e pubblicato con successo nel canale di destinazione!", ephemeral=True)
+        else:
+            await interaction.followup.send("❌ Errore nella formattazione del testo del prodotto.", ephemeral=True)
+
+@bot.command(name="creaprodotto")
+@commands.has_permissions(administrator=True)
+async def creaprodotto(ctx):
+    modal = CreaProdottoModal()
+    await ctx.interaction.response.send_modal(modal) if ctx.interaction else await ctx.send("Usa il comando tramite interazione o modale.")
 
 # Avvio del client Telegram con StringSession
 tg_client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
