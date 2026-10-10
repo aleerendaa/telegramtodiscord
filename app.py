@@ -179,6 +179,7 @@ class OrderApprovalView(discord.ui.View):
 
     @discord.ui.button(label="Conferma Pagamento", style=discord.ButtonStyle.success, emoji="✅")
     async def confirm_payment(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
         # Salva l'ordine nel database con stato 'pagato'
         order_id, _ = save_order(self.nome_inserito, self.product_name, self.price, self.qty, initial_status='pagato')
         
@@ -191,10 +192,11 @@ class OrderApprovalView(discord.ui.View):
         embed.set_field_at(index=6, name="Stato Attuale", value="💳 `pagato` (Confermato)", inline=False)
         
         await interaction.message.edit(embed=embed, view=self)
-        await interaction.response.send_message(f"✅ Pagamento confermato e ordine salvato nel database per {self.nome_inserito}.", ephemeral=True)
+        await interaction.followup.send(f"✅ Pagamento confermato e ordine salvato nel database per {self.nome_inserito}.", ephemeral=True)
 
     @discord.ui.button(label="Annulla Ordine", style=discord.ButtonStyle.danger, emoji="❌")
     async def cancel_order(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
         # Disattiva i pulsanti e aggiorna l'embed senza salvare nel database
         for child in self.children:
             child.disabled = True
@@ -204,91 +206,41 @@ class OrderApprovalView(discord.ui.View):
         embed.set_field_at(index=6, name="Stato Attuale", value="❌ `annullato` (Non disponibile / Scaduto)", inline=False)
         
         await interaction.message.edit(embed=embed, view=self)
-        await interaction.response.send_message("❌ Ordine annullato con successo.", ephemeral=True)
+        await interaction.followup.send("❌ Ordine annullato con successo.", ephemeral=True)
 
-class ClaimModal(discord.ui.Modal, title="Conferma Preordine"):
-    cliente_input = discord.ui.TextInput(
-        label="Nome e Cognome o Codice Cliente",
-        placeholder="Es. Mario Rossi oppure CLI-1719",
-        min_length=2,
-        max_length=50,
-        required=True
-    )
-     
-    quantita = discord.ui.TextInput(
-        label="Quantità desiderata",
-        placeholder="Es. 1, 2, 3...",
-        min_length=1,
-        max_length=3,
-        required=True
-    )
-
-    def __init__(self, product_name, price):
-        super().__init__()
+class ClaimView(discord.ui.View):
+    def __init__(self, product_name, price, start_time=None, end_time=None, post_token=None):
+        super().__init__(timeout=86400)
         self.product_name = product_name
         self.price = price
+        self.start_time = start_time
+        self.end_time = end_time
+        self.post_token = post_token
 
-    async def on_submit(self, interaction: discord.Interaction):
-        try:
-            await interaction.response.defer(ephemeral=True)
-             
-            try:
-                qty = int(self.quantita.value)
-                if qty <= 0:
-                    raise ValueError()
-            except ValueError:
-                await interaction.followup.send("❌ Inserisci una quantità valida maggiore di 0.", ephemeral=True)
-                return
+    @discord.ui.button(label="🛒 CLAIM", style=discord.ButtonStyle.success)
+    async def claim_button_callback(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Impedisce l'errore "ClaimBot non ha risposto in tempo"
+        await interaction.response.defer(ephemeral=True)
 
-            nome_inserito = self.cliente_input.value.strip()
+        if self.post_token and active_product_versions.get(self.product_name) != self.post_token:
+            await interaction.followup.send("❌ Questo annuncio è stato aggiornato o ripostato con nuovi dettagli! Usa il pulsante nel messaggio più recente.", ephemeral=True)
+            return
 
-            try:
-                numeric_price = float(self.price.replace('€', '').strip().replace(',', '.'))
-                total_price = numeric_price * qty
-                total_str = f"{total_price:.2f}".replace('.', ',') + " €"
-            except ValueError:
-                total_str = "N/D"
+        now = datetime.now(ITALY_TZ)
+        
+        if self.start_time and now < self.start_time:
+            await interaction.followup.send(f"⏳ I preordini per questo prodotto non sono ancora aperti!\nInizio previsto: {self.start_time.strftime('%d/%m/%Y alle %H:%M')}", ephemeral=True)
+            return
+            
+        if self.end_time and now > self.end_time:
+            await interaction.followup.send(f"❌ I claim per questo prodotto sono chiusi, scadenza {self.end_time.strftime('%d/%m/%Y alle %H:%M')}, richiedi questo prodotto in <#1531772977073356881> e se disponibile sarà postato", ephemeral=True)
+            return
 
-            # Genera solo il codice cliente temporaneo senza salvare ancora nel DB
-            codice_cliente = trova_o_genera_codice_cliente(nome_inserito)
+        # Invio del Modale tramite l'interazione differita (usando followup o inviando direttamente la modale se supportata)
+        # Nota: Le modali in Discord richiedono interaction.response.send_modal, che funziona se non è stato fatto un defer precedente.
+        # Per evitare problemi con il defer e le modali, gestiamo la risposta diretta con la modale o rimuoviamo il defer per il click del bottone principale.
 
-            await interaction.followup.send(
-                f"✅ **Ordine registrato con successo!**\n\n"
-                f"👤 **Cliente:** {nome_inserito} (Codice: `{codice_cliente}`)\n"
-                f"📦 **Prodotto:** {self.product_name}\n"
-                f"🔢 **Quantità:** {qty}\n"
-                f"💰 **Prezzo unitario:** {self.price}\n"
-                f"💵 **Totale da pagare:** {total_str}\n\n"
-                f"💳 **Metodi di pagamento:**\n"
-                f"• **PayPal:** `@aleerendaa`",
-                ephemeral=True
-            )
-
-            # Notifica nel canale ordini privato (#ordini) con stato "Da pagare" e pulsanti di gestione
-            ordini_channel = bot.get_channel(CHANNEL_ORDINI)
-            if ordini_channel:
-                embed = discord.Embed(title=f"🛒 Nuovo Claim Ricevuto!", color=discord.Color.orange())
-                embed.add_field(name="Discord User", value=f"{interaction.user.mention} ({interaction.user.name})", inline=False)
-                embed.add_field(name="Cliente / Codice", value=f"{nome_inserito} (`{codice_cliente}`)", inline=False)
-                embed.add_field(name="Prodotto", value=self.product_name, inline=False)
-                embed.add_field(name="Quantità", value=str(qty), inline=True)
-                embed.add_field(name="Prezzo Unitario", value=self.price, inline=True)
-                embed.add_field(name="Totale", value=total_str, inline=True)
-                embed.add_field(name="Stato Attuale", value="⏳ `Da pagare`", inline=False)
-                embed.timestamp = datetime.now()
-                 
-                approval_view = OrderApprovalView(interaction.user, nome_inserito, codice_cliente, self.product_name, qty, self.price, total_str)
-                await ordini_channel.send(embed=embed, view=approval_view)
-
-        except Exception as e:
-            print(f"ERRORE CRITICO durante il claim: {e}", flush=True)
-            import traceback
-            traceback.print_exc()
-            try:
-                await interaction.followup.send(f"❌ Si è verificato un errore interno durante la registrazione dell'ordine.", ephemeral=True)
-            except:
-                pass
-
+# Correggiamo la gestione del click del bottone per aprire subito la modale senza defer (la modale risponde entro 3 secondi)
 class ClaimView(discord.ui.View):
     def __init__(self, product_name, price, start_time=None, end_time=None, post_token=None):
         super().__init__(timeout=86400)
@@ -316,6 +268,87 @@ class ClaimView(discord.ui.View):
 
         modal = ClaimModal(self.product_name, self.price)
         await interaction.response.send_modal(modal)
+
+class ClaimModal(discord.ui.Modal, title="Conferma Preordine"):
+    cliente_input = discord.ui.TextInput(
+        label="Nome e Cognome o Codice Cliente",
+        placeholder="Es. Mario Rossi oppure CLI-1719",
+        min_length=2,
+        max_length=50,
+        required=True
+    )
+     
+    quantita = discord.ui.TextInput(
+        label="Quantità desiderata",
+        placeholder="Es. 1, 2, 3...",
+        min_length=1,
+        max_length=3,
+        required=True
+    )
+
+    def __init__(self, product_name, price):
+        super().__init__()
+        self.product_name = product_name
+        self.price = price
+
+    async def on_submit(self, interaction: discord.Interaction):
+        # Usiamo il defer immediato qui dentro per avere fino a 15 minuti di tempo per completare le operazioni pesanti
+        await interaction.response.defer(ephemeral=True)
+        try:
+            try:
+                qty = int(self.quantita.value)
+                if qty <= 0:
+                    raise ValueError()
+            except ValueError:
+                await interaction.followup.send("❌ Inserisci una quantità valida maggiore di 0.", ephemeral=True)
+                return
+
+            nome_inserito = self.cliente_input.value.strip()
+
+            try:
+                numeric_price = float(self.price.replace('€', '').strip().replace(',', '.'))
+                total_price = numeric_price * qty
+                total_str = f"{total_price:.2f}".replace('.', ',') + " €"
+            except ValueError:
+                total_str = "N/D"
+
+            codice_cliente = trova_o_genera_codice_cliente(nome_inserito)
+
+            await interaction.followup.send(
+                f"✅ **Ordine registrato con successo!**\n\n"
+                f"👤 **Cliente:** {nome_inserito} (Codice: `{codice_cliente}`)\n"
+                f"📦 **Prodotto:** {self.product_name}\n"
+                f"🔢 **Quantità:** {qty}\n"
+                f"💰 **Prezzo unitario:** {self.price}\n"
+                f"💵 **Totale da pagare:** {total_str}\n\n"
+                f"💳 **Metodi di pagamento:**\n"
+                f"• **PayPal:** `@aleerendaa`",
+                ephemeral=True
+            )
+
+            ordini_channel = bot.get_channel(CHANNEL_ORDINI)
+            if ordini_channel:
+                embed = discord.Embed(title=f"🛒 Nuovo Claim Ricevuto!", color=discord.Color.orange())
+                embed.add_field(name="Discord User", value=f"{interaction.user.mention} ({interaction.user.name})", inline=False)
+                embed.add_field(name="Cliente / Codice", value=f"{nome_inserito} (`{codice_cliente}`)", inline=False)
+                embed.add_field(name="Prodotto", value=self.product_name, inline=False)
+                embed.add_field(name="Quantità", value=str(qty), inline=True)
+                embed.add_field(name="Prezzo Unitario", value=self.price, inline=True)
+                embed.add_field(name="Totale", value=total_str, inline=True)
+                embed.add_field(name="Stato Attuale", value="⏳ `Da pagare`", inline=False)
+                embed.timestamp = datetime.now()
+                 
+                approval_view = OrderApprovalView(interaction.user, nome_inserito, codice_cliente, self.product_name, qty, self.price, total_str)
+                await ordini_channel.send(embed=embed, view=approval_view)
+
+        except Exception as e:
+            print(f"ERRORE CRITICO durante il claim: {e}", flush=True)
+            import traceback
+            traceback.print_exc()
+            try:
+                await interaction.followup.send(f"❌ Si è verificato un errore interno durante la registrazione dell'ordine.", ephemeral=True)
+            except:
+                pass
 
 class StatusSelect(discord.ui.Select):
     def __init__(self, order_id):
