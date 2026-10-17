@@ -23,6 +23,12 @@ if is_postgres:
 # Dizionario globale per tracciare l'ultima versione attiva di ciascun prodotto
 active_product_versions = {}
 
+# Set per evitare la duplicazione dei messaggi appartenenti agli album (grouped_id)
+processed_grouped_ids = set()
+
+# Lock per sequenziare l'invio dei messaggi Telegram ed evitare sovrapposizioni su Discord
+processing_lock = asyncio.Lock()
+
 # Fuso orario italiano (UTC+2 / CEST)
 ITALY_TZ = timezone(timedelta(hours=2))
 
@@ -49,9 +55,9 @@ DISCORD_TOKEN = os.environ.get('DISCORD_TOKEN', '')
 
 CHANNEL_ADMIN_LOGS = 1533540767396794479
 CHANNEL_ORDINI = 1558069027329540156
-CHANNEL_POKEMON = 1561104353715027998
-CHANNEL_ONEPIECE = 1557071963489574932
-CHANNEL_DRAGONBALL = 1557071904211472594
+CHANNEL_POKEMON = 1557072021215776768
+CHANNEL_ONEPIECE = 1532111869832069242
+CHANNEL_DRAGONBALL = 1532112469567471938
 CHANNEL_PREORDER = 1532029845481984260
 CHANNEL_ALTRO = 1532112759490351244
 
@@ -387,7 +393,6 @@ class ClaimModal(discord.ui.Modal, title="Conferma Preordine"):
             except:
                 pass
 
-# Modale per Creazione Prodotto con supporto URL Foto
 class ModaleCreaProdottoStandard(discord.ui.Modal, title="Crea Nuovo Prodotto"):
     titolo = discord.ui.TextInput(
         label="Nome Prodotto", 
@@ -441,7 +446,6 @@ class ModaleCreaProdottoStandard(discord.ui.Modal, title="Crea Nuovo Prodotto"):
             
             view = ClaimView(title, price_formatted, start_dt, end_dt, post_token)
             
-            # Invio eventuale immagine dal link inserito nel modulo
             url_immagine = self.foto_url.value.strip() if self.foto_url.value else None
             if url_immagine and (url_immagine.startswith("http://") or url_immagine.startswith("https://")):
                 await channel.send(content=url_immagine)
@@ -585,7 +589,7 @@ def clean_message_text(text):
          
     return result, product_title, product_price
 
-# Avvio dello Userbot Telegram
+# Avvio dello Userbot Telegram con sequenziamento sequenziale pulito
 tg_client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
 
 @tg_client.on(events.NewMessage)
@@ -593,28 +597,82 @@ async def debug_all_messages(event):
     if event.chat_id != TELEGRAM_CHANNEL:
         return
 
-    text = event.raw_text or ""
-    if is_valid_product_message(text):
-        target_channel_id = get_discord_channel_id(text)
-        channel = bot.get_channel(target_channel_id)
-        if channel:
-            cleaned, title, price = clean_message_text(text)
-            start_dt, end_dt = extract_dates(text)
+    # Usiamo il lock per elaborare un post/album alla volta
+    async with processing_lock:
+        text = event.raw_text or ""
+        
+        # Gestione Album Telegram (grouped_id)
+        if event.grouped_id:
+            if event.grouped_id in processed_grouped_ids:
+                return
+            processed_grouped_ids.add(event.grouped_id)
             
+            # Recuperiamo tutti i messaggi componenti l'album Telegram
+            album_messages = await tg_client.get_messages(event.chat_id, ids=list(range(event.id - 10, event.id + 10)))
+            group_msgs = [m for m in album_messages if m and m.grouped_id == event.grouped_id]
+            
+            # Troviamo il testo principale tra le foto
+            main_text = ""
+            for m in group_msgs:
+                if m.raw_text and is_valid_product_message(m.raw_text):
+                    main_text = m.raw_text
+                    break
+            
+            if not main_text:
+                return
+
+            target_channel_id = get_discord_channel_id(main_text)
+            channel = bot.get_channel(target_channel_id)
+            if not channel:
+                return
+
+            cleaned, title, price = clean_message_text(main_text)
+            start_dt, end_dt = extract_dates(main_text)
             post_token = str(uuid.uuid4())
             active_product_versions[title] = post_token
-            
             view = ClaimView(title, price, start_dt, end_dt, post_token)
-             
-            if event.photo:
-                path = await event.download_media(file='temp_test.jpg')
-                if path:
-                    await channel.send(file=discord.File(path))
-                    await asyncio.sleep(1.0)
-                    os.remove(path)
-              
+
+            # Scarica e invia le foto una per una
+            for m in group_msgs:
+                if m.photo:
+                    file_path = f"temp_{m.id}.jpg"
+                    path = await m.download_media(file=file_path)
+                    if path:
+                        await channel.send(file=discord.File(path))
+                        await asyncio.sleep(1.0)
+                        if os.path.exists(path):
+                            os.remove(path)
+
             if cleaned:
                 await channel.send(content=cleaned, view=view)
+                await asyncio.sleep(1.5)
+
+        else:
+            # Gestione messaggio singolo normale
+            if is_valid_product_message(text):
+                target_channel_id = get_discord_channel_id(text)
+                channel = bot.get_channel(target_channel_id)
+                if channel:
+                    cleaned, title, price = clean_message_text(text)
+                    start_dt, end_dt = extract_dates(text)
+                    
+                    post_token = str(uuid.uuid4())
+                    active_product_versions[title] = post_token
+                    
+                    view = ClaimView(title, price, start_dt, end_dt, post_token)
+                     
+                    if event.photo:
+                        file_path = f"temp_{event.id}.jpg"
+                        path = await event.download_media(file=file_path)
+                        if path:
+                            await channel.send(file=discord.File(path))
+                            await asyncio.sleep(1.0)
+                            if os.path.exists(path):
+                                os.remove(path)
+                      
+                    if cleaned:
+                        await channel.send(content=cleaned, view=view)
+                        await asyncio.sleep(1.5)
 
 @bot.event
 async def on_ready():
