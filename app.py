@@ -144,21 +144,21 @@ def save_order(input_cliente, product_name, price, quantity, initial_status='in_
         cursor.execute('''
             INSERT INTO ordini (cliente, prodotto, quantita, prezzo_unitario, stato, messaggio, created_at, "Acquisto")
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
-        ''', (codice_cliente, product_name, int(quantity), numeric_price, initial_status, messaggio_str, timestamp, 'Discord'))
+        ''', (codice_cliente, product_name, int(quantity), numeric_price, initial_status, messaggio_str, timestamp, 'discord'))
         order_id = cursor.fetchone()[0]
     else:
         order_id = str(uuid.uuid4())
         cursor.execute('''
             INSERT INTO ordini (id, cliente, prodotto, quantita, prezzo_unitario, stato, messaggio, created_at, "Acquisto")
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (order_id, codice_cliente, product_name, int(quantity), numeric_price, initial_status, messaggio_str, timestamp, 'Discord'))
+        ''', (order_id, codice_cliente, product_name, int(quantity), numeric_price, initial_status, messaggio_str, timestamp, 'discord'))
          
     conn.commit()
     cursor.close()
     conn.close()
     return order_id, codice_cliente
 
-# Logica del recap giornaliero
+# Logica del recap con correzione del CAST per il tipo ENUM di Supabase
 async def invia_recap_giornaliero_logic(target_channel):
     try:
         conn = get_db_connection()
@@ -169,7 +169,7 @@ async def invia_recap_giornaliero_logic(target_channel):
                 SELECT id, cliente, prodotto, quantita, prezzo_unitario, stato, messaggio, created_at 
                 FROM ordini 
                 WHERE created_at >= NOW() - INTERVAL '24 hours' 
-                  AND (LOWER("Acquisto") = 'discord' OR "Acquisto" IS NULL)
+                  AND ("Acquisto"::text ILIKE 'discord' OR "Acquisto" IS NULL)
                 ORDER BY created_at DESC
             ''')
         else:
@@ -239,7 +239,6 @@ class OrderApprovalView(discord.ui.View):
     async def confirm_payment(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True)
         try:
-            # Estrazione informazioni dall'embed se non presenti in istanza
             if not self.nome_inserito and interaction.message and interaction.message.embeds:
                 embed = interaction.message.embeds[0]
                 for field in embed.fields:
@@ -390,8 +389,79 @@ class ClaimModal(discord.ui.Modal, title="Conferma Preordine"):
             except:
                 pass
 
-# Nuovo Modale Dettagliato per la Creazione Prodotto
-class CreaProdottoModalDettagliato(discord.ui.Modal, title="Crea Nuovo Prodotto"):
+# STEP 2: Modale per la Validità Temporale (Giorno/Ora Inizio e Fine)
+class ModaleValiditaProdotto(discord.ui.Modal, title="Passo 2: Periodo di Validità"):
+    giorno_inizio = discord.ui.TextInput(
+        label="1. Giorno Inizio (GG/MM/AAAA)", 
+        placeholder="Es. 10/10/2026", 
+        required=True
+    )
+    orario_inizio = discord.ui.TextInput(
+        label="2. Orario Inizio (HH:MM)", 
+        placeholder="Es. 12:00", 
+        required=True
+    )
+    giorno_fine = discord.ui.TextInput(
+        label="3. Giorno Fine (GG/MM/AAAA)", 
+        placeholder="Es. 15/10/2026", 
+        required=True
+    )
+    orario_fine = discord.ui.TextInput(
+        label="4. Orario Fine (HH:MM)", 
+        placeholder="Es. 23:00", 
+        required=True
+    )
+
+    def __init__(self, dati_prodotto):
+        super().__init__()
+        self.dati_prodotto = dati_prodotto
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        try:
+            # Assemblaggio testo completo
+            titolo = self.dati_prodotto['titolo']
+            desc = self.dati_prodotto['descrizione']
+            prezzo = self.dati_prodotto['prezzo']
+            disp = self.dati_prodotto['disponibilita']
+            hashtag = self.dati_prodotto['hashtag']
+            
+            str_validita = f"dal {self.giorno_inizio.value.strip()}, {self.orario_inizio.value.strip()} fino al {self.giorno_fine.value.strip()}, {self.orario_fine.value.strip()}"
+            
+            full_text = (
+                f"{titolo}\n\n"
+                f"{desc}\n\n"
+                f"{prezzo} • {disp}\n\n"
+                f"Ordinazioni aperte {str_validita}\n\n"
+                f"{hashtag}"
+            )
+            
+            target_channel_id = get_discord_channel_id(full_text)
+            channel = bot.get_channel(target_channel_id)
+            
+            if not channel:
+                await interaction.followup.send("❌ Canale Discord di destinazione non trovato per l'hashtag inserito.", ephemeral=True)
+                return
+
+            cleaned, title, price_formatted = clean_message_text(full_text)
+            start_dt, end_dt = extract_dates(full_text)
+            
+            post_token = str(uuid.uuid4())
+            active_product_versions[title] = post_token
+            
+            view = ClaimView(title, price_formatted, start_dt, end_dt, post_token)
+            
+            if cleaned:
+                await channel.send(content=cleaned, view=view)
+                await interaction.followup.send(f"✅ Prodotto creato e pubblicato con successo in <#{target_channel_id}>!", ephemeral=True)
+            else:
+                await interaction.followup.send("❌ Errore nella formattazione del testo del prodotto.", ephemeral=True)
+        except Exception as e:
+            print(f"Errore creazione prodotto: {e}", flush=True)
+            await interaction.followup.send(f"❌ Si è verificato un errore durante la pubblicazione: {e}", ephemeral=True)
+
+# STEP 1: Modale per i Dettagli del Prodotto (Nome, Descrizione, Prezzo, Disponibilità, Canale)
+class ModaleDettagliProdotto(discord.ui.Modal, title="Passo 1: Dettagli Prodotto"):
     titolo = discord.ui.TextInput(
         label="1. Nome Prodotto", 
         placeholder="Es. 30th Celebration Booster Box", 
@@ -403,56 +473,32 @@ class CreaProdottoModalDettagliato(discord.ui.Modal, title="Crea Nuovo Prodotto"
         style=discord.TextStyle.paragraph, 
         required=True
     )
-    prezzo_disp = discord.ui.TextInput(
-        label="3. Prezzo e Disponibilità", 
-        placeholder="Es. 205,00 € • 15 disponibili", 
+    prezzo = discord.ui.TextInput(
+        label="3. Prezzo (€)", 
+        placeholder="Es. 205,00 €", 
         required=True
     )
-    categoria_hashtag = discord.ui.TextInput(
-        label="4. Canale (#pokemon #onepiece #dragonball)", 
-        placeholder="Es. #pokemon oppure #onepiece", 
+    disponibilita = discord.ui.TextInput(
+        label="4. Disponibilità", 
+        placeholder="Es. 15 disponibili", 
         required=True
     )
-    validita = discord.ui.TextInput(
-        label="5. Inizio e Fine Validità", 
-        placeholder="Es. dal 10/10/2026, 12:00 fino al 15/10/2026, 23:00", 
+    hashtag = discord.ui.TextInput(
+        label="5. Canale (#pokemon #onepiece #dragonball)", 
+        placeholder="Es. #pokemon", 
         required=True
     )
 
     async def on_submit(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
-        try:
-            full_text = (
-                f"{self.titolo.value}\n\n"
-                f"{self.descrizione.value}\n\n"
-                f"{self.prezzo_disp.value}\n\n"
-                f"Ordinazioni aperte {self.validita.value}\n\n"
-                f"{self.categoria_hashtag.value}"
-            )
-            
-            target_channel_id = get_discord_channel_id(full_text)
-            channel = bot.get_channel(target_channel_id)
-            
-            if not channel:
-                await interaction.followup.send("❌ Canale Discord di destinazione non trovato. Verifica l'hashtag inserito.", ephemeral=True)
-                return
-
-            cleaned, title, price = clean_message_text(full_text)
-            start_dt, end_dt = extract_dates(full_text)
-            
-            post_token = str(uuid.uuid4())
-            active_product_versions[title] = post_token
-            
-            view = ClaimView(title, price, start_dt, end_dt, post_token)
-            
-            if cleaned:
-                await channel.send(content=cleaned, view=view)
-                await interaction.followup.send(f"✅ Prodotto creato e pubblicato con successo in <#{target_channel_id}>!", ephemeral=True)
-            else:
-                await interaction.followup.send("❌ Errore nella formattazione del testo del prodotto.", ephemeral=True)
-        except Exception as e:
-            print(f"Errore creazione prodotto: {e}", flush=True)
-            await interaction.followup.send(f"❌ Si è verificato un errore durante la creazione: {e}", ephemeral=True)
+        dati_prodotto = {
+            'titolo': self.titolo.value.strip(),
+            'descrizione': self.descrizione.value.strip(),
+            'prezzo': self.prezzo.value.strip(),
+            'disponibilita': self.disponibilita.value.strip(),
+            'hashtag': self.hashtag.value.strip(),
+        }
+        # Apre subito il modale del Passo 2 per le date
+        await interaction.response.send_modal(ModaleValiditaProdotto(dati_prodotto))
 
 # Menu per #ordini con pulsanti persistenti
 class OrdiniAdminMenuView(discord.ui.View):
@@ -461,7 +507,7 @@ class OrdiniAdminMenuView(discord.ui.View):
 
     @discord.ui.button(label="➕ Crea Nuovo Prodotto", style=discord.ButtonStyle.success, custom_id="menu_crea_prodotto")
     async def crea_prodotto_callback(self, interaction: discord.Interaction, button: discord.ui.Button):
-        modal = CreaProdottoModalDettagliato()
+        modal = ModaleDettagliProdotto()
         await interaction.response.send_modal(modal)
 
     @discord.ui.button(label="📊 Genera Recap Ora", style=discord.ButtonStyle.primary, emoji="🕒", custom_id="menu_genera_recap")
