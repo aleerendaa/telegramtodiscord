@@ -77,7 +77,7 @@ def init_db():
             stato TEXT DEFAULT 'in_arrivo',
             messaggio TEXT,
             created_at TIMESTAMPTZ,
-            "Acquisto" TEXT DEFAULT 'discord'
+            "Acquisto" TEXT DEFAULT 'Discord'
         )
     ''')
     conn.commit()
@@ -140,25 +140,26 @@ def save_order(input_cliente, product_name, price, quantity, initial_status='in_
     timestamp = datetime.now(timezone.utc).isoformat()
     messaggio_str = f"[user:{input_cliente.strip()}]"
     
+    # Valore 'Discord' con la maiuscola per rispettare l'ENUM di Supabase
     if is_postgres:
         cursor.execute('''
             INSERT INTO ordini (cliente, prodotto, quantita, prezzo_unitario, stato, messaggio, created_at, "Acquisto")
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
-        ''', (codice_cliente, product_name, int(quantity), numeric_price, initial_status, messaggio_str, timestamp, 'discord'))
+        ''', (codice_cliente, product_name, int(quantity), numeric_price, initial_status, messaggio_str, timestamp, 'Discord'))
         order_id = cursor.fetchone()[0]
     else:
         order_id = str(uuid.uuid4())
         cursor.execute('''
             INSERT INTO ordini (id, cliente, prodotto, quantita, prezzo_unitario, stato, messaggio, created_at, "Acquisto")
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (order_id, codice_cliente, product_name, int(quantity), numeric_price, initial_status, messaggio_str, timestamp, 'discord'))
+        ''', (order_id, codice_cliente, product_name, int(quantity), numeric_price, initial_status, messaggio_str, timestamp, 'Discord'))
          
     conn.commit()
     cursor.close()
     conn.close()
     return order_id, codice_cliente
 
-# Logica del recap con correzione del CAST per il tipo ENUM di Supabase
+# Logica del recap con gestione maiuscole/minuscole per l'ENUM
 async def invia_recap_giornaliero_logic(target_channel):
     try:
         conn = get_db_connection()
@@ -419,7 +420,6 @@ class ModaleValiditaProdotto(discord.ui.Modal, title="Passo 2: Periodo di Validi
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         try:
-            # Assemblaggio testo completo
             titolo = self.dati_prodotto['titolo']
             desc = self.dati_prodotto['descrizione']
             prezzo = self.dati_prodotto['prezzo']
@@ -460,7 +460,7 @@ class ModaleValiditaProdotto(discord.ui.Modal, title="Passo 2: Periodo di Validi
             print(f"Errore creazione prodotto: {e}", flush=True)
             await interaction.followup.send(f"❌ Si è verificato un errore durante la pubblicazione: {e}", ephemeral=True)
 
-# STEP 1: Modale per i Dettagli del Prodotto (Nome, Descrizione, Prezzo, Disponibilità, Canale)
+# STEP 1: Modale per i Dettagli del Prodotto
 class ModaleDettagliProdotto(discord.ui.Modal, title="Passo 1: Dettagli Prodotto"):
     titolo = discord.ui.TextInput(
         label="1. Nome Prodotto", 
@@ -497,7 +497,6 @@ class ModaleDettagliProdotto(discord.ui.Modal, title="Passo 1: Dettagli Prodotto
             'disponibilita': self.disponibilita.value.strip(),
             'hashtag': self.hashtag.value.strip(),
         }
-        # Apre subito il modale del Passo 2 per le date
         await interaction.response.send_modal(ModaleValiditaProdotto(dati_prodotto))
 
 # Menu per #ordini con pulsanti persistenti
@@ -665,7 +664,6 @@ async def debug_all_messages(event):
 async def on_ready():
     print(f"Bot Discord connesso come {bot.user}", flush=True)
     
-    # Registrazione delle View persistenti al riavvio per garantire la risposta ai pulsanti
     bot.add_view(OrdiniAdminMenuView())
     bot.add_view(OrderApprovalView())
     bot.add_view(ClaimView())
