@@ -158,7 +158,6 @@ def save_order(input_cliente, product_name, price, quantity, initial_status='in_
     conn.close()
     return order_id, codice_cliente
 
-# Logica del recap giornaliero (solo ordini Discord)
 async def invia_recap_giornaliero_logic(target_channel):
     try:
         conn = get_db_connection()
@@ -219,7 +218,6 @@ async def recap_giornaliero():
         return
     await invia_recap_giornaliero_logic(admin_channel)
 
-# Configurazione Bot Discord
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
@@ -389,7 +387,7 @@ class ClaimModal(discord.ui.Modal, title="Conferma Preordine"):
             except:
                 pass
 
-# Modale Standard per la Creazione Prodotto (4 campi chiari e funzionali)
+# Modale per Creazione Prodotto con supporto URL Foto
 class ModaleCreaProdottoStandard(discord.ui.Modal, title="Crea Nuovo Prodotto"):
     titolo = discord.ui.TextInput(
         label="Nome Prodotto", 
@@ -411,6 +409,11 @@ class ModaleCreaProdottoStandard(discord.ui.Modal, title="Crea Nuovo Prodotto"):
         label="Periodo Validità", 
         placeholder="dal 10/10/2026, 12:00 fino al 15/10/2026, 23:00", 
         required=True
+    )
+    foto_url = discord.ui.TextInput(
+        label="Link Foto Prodotto (Opzionale)", 
+        placeholder="Es. https://i.imgur.com/immagine.jpg (Opzionale)", 
+        required=False
     )
 
     async def on_submit(self, interaction: discord.Interaction):
@@ -438,6 +441,12 @@ class ModaleCreaProdottoStandard(discord.ui.Modal, title="Crea Nuovo Prodotto"):
             
             view = ClaimView(title, price_formatted, start_dt, end_dt, post_token)
             
+            # Invio eventuale immagine dal link inserito nel modulo
+            url_immagine = self.foto_url.value.strip() if self.foto_url.value else None
+            if url_immagine and (url_immagine.startswith("http://") or url_immagine.startswith("https://")):
+                await channel.send(content=url_immagine)
+                await asyncio.sleep(0.5)
+
             if cleaned:
                 await channel.send(content=cleaned, view=view)
                 await interaction.followup.send(f"✅ Prodotto creato e pubblicato con successo in <#{target_channel_id}>!", ephemeral=True)
@@ -447,7 +456,6 @@ class ModaleCreaProdottoStandard(discord.ui.Modal, title="Crea Nuovo Prodotto"):
             print(f"Errore creazione prodotto: {e}", flush=True)
             await interaction.followup.send(f"❌ Si è verificato un errore durante la pubblicazione: {e}", ephemeral=True)
 
-# Menu per #ordini con pulsanti persistenti
 class OrdiniAdminMenuView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
