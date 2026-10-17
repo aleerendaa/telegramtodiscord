@@ -140,7 +140,6 @@ def save_order(input_cliente, product_name, price, quantity, initial_status='in_
     timestamp = datetime.now(timezone.utc).isoformat()
     messaggio_str = f"[user:{input_cliente.strip()}]"
     
-    # Valore 'Discord' con la maiuscola per rispettare l'ENUM di Supabase
     if is_postgres:
         cursor.execute('''
             INSERT INTO ordini (cliente, prodotto, quantita, prezzo_unitario, stato, messaggio, created_at, "Acquisto")
@@ -159,7 +158,7 @@ def save_order(input_cliente, product_name, price, quantity, initial_status='in_
     conn.close()
     return order_id, codice_cliente
 
-# Logica del recap con gestione maiuscole/minuscole per l'ENUM
+# Logica del recap giornaliero (solo ordini Discord)
 async def invia_recap_giornaliero_logic(target_channel):
     try:
         conn = get_db_connection()
@@ -220,7 +219,7 @@ async def recap_giornaliero():
         return
     await invia_recap_giornaliero_logic(admin_channel)
 
-# 3. Configurazione Bot Discord
+# Configurazione Bot Discord
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
@@ -390,50 +389,38 @@ class ClaimModal(discord.ui.Modal, title="Conferma Preordine"):
             except:
                 pass
 
-# STEP 2: Modale per la Validità Temporale (Giorno/Ora Inizio e Fine)
-class ModaleValiditaProdotto(discord.ui.Modal, title="Passo 2: Periodo di Validità"):
-    giorno_inizio = discord.ui.TextInput(
-        label="1. Giorno Inizio (GG/MM/AAAA)", 
-        placeholder="Es. 10/10/2026", 
+# Modale Standard per la Creazione Prodotto (4 campi chiari e funzionali)
+class ModaleCreaProdottoStandard(discord.ui.Modal, title="Crea Nuovo Prodotto"):
+    titolo = discord.ui.TextInput(
+        label="Nome Prodotto", 
+        placeholder="Es. 30th Celebration Booster Box", 
         required=True
     )
-    orario_inizio = discord.ui.TextInput(
-        label="2. Orario Inizio (HH:MM)", 
-        placeholder="Es. 12:00", 
+    descrizione = discord.ui.TextInput(
+        label="Descrizione e Prezzo", 
+        placeholder="Es. Sealed / Box da 30 Buste\n205,00 € • 15 disponibili", 
+        style=discord.TextStyle.paragraph, 
         required=True
     )
-    giorno_fine = discord.ui.TextInput(
-        label="3. Giorno Fine (GG/MM/AAAA)", 
-        placeholder="Es. 15/10/2026", 
+    hashtag = discord.ui.TextInput(
+        label="Canale (#pokemon #onepiece #dragonball)", 
+        placeholder="Es. #pokemon", 
         required=True
     )
-    orario_fine = discord.ui.TextInput(
-        label="4. Orario Fine (HH:MM)", 
-        placeholder="Es. 23:00", 
+    date_validita = discord.ui.TextInput(
+        label="Periodo Validità", 
+        placeholder="dal 10/10/2026, 12:00 fino al 15/10/2026, 23:00", 
         required=True
     )
-
-    def __init__(self, dati_prodotto):
-        super().__init__()
-        self.dati_prodotto = dati_prodotto
 
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         try:
-            titolo = self.dati_prodotto['titolo']
-            desc = self.dati_prodotto['descrizione']
-            prezzo = self.dati_prodotto['prezzo']
-            disp = self.dati_prodotto['disponibilita']
-            hashtag = self.dati_prodotto['hashtag']
-            
-            str_validita = f"dal {self.giorno_inizio.value.strip()}, {self.orario_inizio.value.strip()} fino al {self.giorno_fine.value.strip()}, {self.orario_fine.value.strip()}"
-            
             full_text = (
-                f"{titolo}\n\n"
-                f"{desc}\n\n"
-                f"{prezzo} • {disp}\n\n"
-                f"Ordinazioni aperte {str_validita}\n\n"
-                f"{hashtag}"
+                f"{self.titolo.value.strip()}\n\n"
+                f"{self.descrizione.value.strip()}\n\n"
+                f"Ordinazioni aperte {self.date_validita.value.strip()}\n\n"
+                f"{self.hashtag.value.strip()}"
             )
             
             target_channel_id = get_discord_channel_id(full_text)
@@ -460,45 +447,6 @@ class ModaleValiditaProdotto(discord.ui.Modal, title="Passo 2: Periodo di Validi
             print(f"Errore creazione prodotto: {e}", flush=True)
             await interaction.followup.send(f"❌ Si è verificato un errore durante la pubblicazione: {e}", ephemeral=True)
 
-# STEP 1: Modale per i Dettagli del Prodotto
-class ModaleDettagliProdotto(discord.ui.Modal, title="Passo 1: Dettagli Prodotto"):
-    titolo = discord.ui.TextInput(
-        label="1. Nome Prodotto", 
-        placeholder="Es. 30th Celebration Booster Box", 
-        required=True
-    )
-    descrizione = discord.ui.TextInput(
-        label="2. Descrizione Prodotto", 
-        placeholder="Es. Sealed / Box da 30 Buste", 
-        style=discord.TextStyle.paragraph, 
-        required=True
-    )
-    prezzo = discord.ui.TextInput(
-        label="3. Prezzo (€)", 
-        placeholder="Es. 205,00 €", 
-        required=True
-    )
-    disponibilita = discord.ui.TextInput(
-        label="4. Disponibilità", 
-        placeholder="Es. 15 disponibili", 
-        required=True
-    )
-    hashtag = discord.ui.TextInput(
-        label="5. Canale (#pokemon #onepiece #dragonball)", 
-        placeholder="Es. #pokemon", 
-        required=True
-    )
-
-    async def on_submit(self, interaction: discord.Interaction):
-        dati_prodotto = {
-            'titolo': self.titolo.value.strip(),
-            'descrizione': self.descrizione.value.strip(),
-            'prezzo': self.prezzo.value.strip(),
-            'disponibilita': self.disponibilita.value.strip(),
-            'hashtag': self.hashtag.value.strip(),
-        }
-        await interaction.response.send_modal(ModaleValiditaProdotto(dati_prodotto))
-
 # Menu per #ordini con pulsanti persistenti
 class OrdiniAdminMenuView(discord.ui.View):
     def __init__(self):
@@ -506,7 +454,7 @@ class OrdiniAdminMenuView(discord.ui.View):
 
     @discord.ui.button(label="➕ Crea Nuovo Prodotto", style=discord.ButtonStyle.success, custom_id="menu_crea_prodotto")
     async def crea_prodotto_callback(self, interaction: discord.Interaction, button: discord.ui.Button):
-        modal = ModaleDettagliProdotto()
+        modal = ModaleCreaProdottoStandard()
         await interaction.response.send_modal(modal)
 
     @discord.ui.button(label="📊 Genera Recap Ora", style=discord.ButtonStyle.primary, emoji="🕒", custom_id="menu_genera_recap")
