@@ -80,7 +80,8 @@ def init_db():
             prezzo_unitario NUMERIC,
             stato TEXT DEFAULT 'in_arrivo',
             messaggio TEXT,
-            created_at TIMESTAMPTZ
+            created_at TIMESTAMPTZ,
+            "Acquisto" TEXT DEFAULT 'discord'
         )
     ''')
     conn.commit()
@@ -142,18 +143,19 @@ def save_order(input_cliente, product_name, price, quantity, initial_status='in_
 
     timestamp = datetime.now(timezone.utc).isoformat()
     messaggio_str = f"[user:{input_cliente.strip()}]"
-     
+    
+    # Salva specificando la provenienza 'discord'
     if is_postgres:
         cursor.execute('''
-            INSERT INTO ordini (cliente, prodotto, quantita, prezzo_unitario, stato, messaggio, created_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id
+            INSERT INTO ordini (cliente, prodotto, quantita, prezzo_unitario, stato, messaggio, created_at, "Acquisto")
+            VALUES (%s, %s, %s, %s, %s, %s, %s, 'discord') RETURNING id
         ''', (codice_cliente, product_name, int(quantity), numeric_price, initial_status, messaggio_str, timestamp))
         order_id = cursor.fetchone()[0]
     else:
         order_id = str(uuid.uuid4())
         cursor.execute('''
-            INSERT INTO ordini (id, cliente, prodotto, quantita, prezzo_unitario, stato, messaggio, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO ordini (id, cliente, prodotto, quantita, prezzo_unitario, stato, messaggio, created_at, "Acquisto")
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'discord')
         ''', (order_id, codice_cliente, product_name, int(quantity), numeric_price, initial_status, messaggio_str, timestamp))
          
     conn.commit()
@@ -161,26 +163,46 @@ def save_order(input_cliente, product_name, price, quantity, initial_status='in_
     conn.close()
     return order_id, codice_cliente
 
-# Funzione per generare l'embed/testo del recap giornaliero
+# Logica del recap: filtra SOLO gli ordini con Acquisto = 'discord' nelle ultime 24 ore
 async def invia_recap_giornaliero_logic(target_channel):
     conn = get_db_connection()
     cursor = conn.cursor()
     
     if is_postgres:
-        cursor.execute("SELECT id, cliente, prodotto, quantita, prezzo_unitario, stato, messaggio, created_at FROM ordini WHERE created_at >= NOW() - INTERVAL '24 hours' ORDER BY created_at DESC")
+        cursor.execute('''
+            SELECT id, cliente, prodotto, quantita, prezzo_unitario, stato, messaggio, created_at 
+            FROM ordini 
+            WHERE created_at >= NOW() - INTERVAL '24 hours' 
+              AND (LOWER("Acquisto") = 'discord' OR "Acquisto" IS NULL)
+            ORDER BY created_at DESC
+        ''')
     else:
-        cursor.execute("SELECT id, cliente, prodotto, quantita, prezzo_unitario, stato, messaggio, created_at FROM ordini WHERE datetime(created_at) >= datetime('now', '-1 day') ORDER BY created_at DESC")
+        cursor.execute('''
+            SELECT id, cliente, prodotto, quantita, prezzo_unitario, stato, messaggio, created_at 
+            FROM ordini 
+            WHERE datetime(created_at) >= datetime('now', '-1 day') 
+              AND (LOWER("Acquisto") = 'discord' OR "Acquisto" IS NULL)
+            ORDER BY created_at DESC
+        ''')
         
     rows = cursor.fetchall()
     cursor.close()
     conn.close()
 
     if not rows:
-        embed = discord.Embed(title="📊 Recap Giornaliero Ordini", description="Nessun nuovo ordine registrato nelle ultime 24 ore.", color=discord.Color.green())
+        embed = discord.Embed(
+            title="📊 Recap Giornaliero Ordini Discord", 
+            description="Nessun nuovo ordine ricevuto da Discord nelle ultime 24 ore.", 
+            color=discord.Color.green()
+        )
         await target_channel.send(embed=embed)
         return
 
-    embed = discord.Embed(title="📊 Recap Giornaliero Ordini (Ultime 24h)", color=discord.Color.orange(), timestamp=datetime.now())
+    embed = discord.Embed(
+        title="📊 Recap Giornaliero Ordini Discord (Ultime 24h)", 
+        color=discord.Color.orange(), 
+        timestamp=datetime.now()
+    )
     for row in rows:
         oid, cliente, prodotto, quantita, prezzo_unitario, stato, messaggio, created_at = row
         status_icon = "⏳" if stato == "in_arrivo" else ("💳" if stato == "pagato" else "🚚")
@@ -198,7 +220,7 @@ async def recap_giornaliero():
         return
     await invia_recap_giornaliero_logic(admin_channel)
 
-# 3. Configurazione Bot Discord e View per Admin
+# 3. Configurazione Bot Discord
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
@@ -217,6 +239,7 @@ class OrderApprovalView(discord.ui.View):
     @discord.ui.button(label="Conferma Pagamento", style=discord.ButtonStyle.success, emoji="✅")
     async def confirm_payment(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
+        # Salva nel DB impostando 'discord' come canale di acquisto
         order_id, _ = save_order(self.nome_inserito, self.product_name, self.price, self.qty, initial_status='pagato')
         
         for child in self.children:
@@ -244,7 +267,6 @@ class OrderApprovalView(discord.ui.View):
 
 class ClaimView(discord.ui.View):
     def __init__(self, product_name, price, start_time=None, end_time=None, post_token=None):
-        # Impostiamo timeout=None per non far scadere mai il pulsante
         super().__init__(timeout=None)
         self.product_name = product_name
         self.price = price
@@ -252,33 +274,20 @@ class ClaimView(discord.ui.View):
         self.end_time = end_time
         self.post_token = post_token
 
-    # Aggiungiamo un custom_id dinamico per rendere la view identificabile da Discord
     @discord.ui.button(label="🛒 CLAIM", style=discord.ButtonStyle.success, custom_id="claim_button_persistent")
     async def claim_button_callback(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Controllo versione / repost
         if self.post_token and active_product_versions.get(self.product_name) != self.post_token:
-            await interaction.response.send_message(
-                "❌ Questo annuncio è stato aggiornato o ripostato con nuovi dettagli! Usa il pulsante nel messaggio più recente.", 
-                ephemeral=True
-            )
+            await interaction.response.send_message("❌ Questo annuncio è stato aggiornato o ripostato con nuovi dettagli! Usa il pulsante nel messaggio più recente.", ephemeral=True)
             return
 
         now = datetime.now(ITALY_TZ)
         
-        # Controllo se non ancora aperto
         if self.start_time and now < self.start_time:
-            await interaction.response.send_message(
-                f"⏳ I preordini per questo prodotto non sono ancora aperti!\nInizio previsto: {self.start_time.strftime('%d/%m/%Y alle %H:%M')}", 
-                ephemeral=True
-            )
+            await interaction.response.send_message(f"⏳ I preordini per questo prodotto non sono ancora aperti!\nInizio previsto: {self.start_time.strftime('%d/%m/%Y alle %H:%M')}", ephemeral=True)
             return
             
-        # Controllo se scaduto
         if self.end_time and now > self.end_time:
-            await interaction.response.send_message(
-                f"❌ I claim per questo prodotto sono chiusi, scadenza {self.end_time.strftime('%d/%m/%Y alle %H:%M')}, richiedi questo prodotto in <#1531772977073356881> e se disponibile sarà postato", 
-                ephemeral=True
-            )
+            await interaction.response.send_message(f"❌ I claim per questo prodotto sono chiusi, scadenza {self.end_time.strftime('%d/%m/%Y alle %H:%M')}, richiedi questo prodotto in <#1531772977073356881> e se disponibile sarà postato", ephemeral=True)
             return
 
         modal = ClaimModal(self.product_name, self.price)
@@ -364,93 +373,65 @@ class ClaimModal(discord.ui.Modal, title="Conferma Preordine"):
             except:
                 pass
 
-class StatusSelect(discord.ui.Select):
-    def __init__(self, order_id):
-        self.order_id = order_id
-        options = [
-            discord.SelectOption(label="In arrivo", value="in_arrivo", emoji="⏳", description="Imposta stato a in_arrivo"),
-            discord.SelectOption(label="Pagato", value="pagato", emoji="💳", description="Imposta stato a pagato"),
-            discord.SelectOption(label="Consegnato", value="consegnato", emoji="🚚", description="Imposta stato a consegnato"),
-        ]
-        super().__init__(placeholder=f"Modifica stato ordine...", min_values=1, max_values=1, options=options)
+# Modale per la Creazione Manuale Prodotto da Discord
+class CreaProdottoModal(discord.ui.Modal, title="Crea Nuovo Prodotto"):
+    titolo = discord.ui.TextInput(label="Nome del Prodotto", placeholder="Es. 30th Celebration Booster Box", required=True)
+    descrizione = discord.ui.TextInput(label="Descrizione e Prezzo", placeholder="Es. Sealed\n205,00 € • 15 disponibili", style=discord.TextStyle.paragraph, required=True)
+    hashtag = discord.ui.TextInput(label="Canale / Categoria (Hashtag)", placeholder="Es. #pokemon, #onepiece, #dragonball...", required=True)
+    date_validita = discord.ui.TextInput(label="Periodo Validità", placeholder="dal 10/10/2026, 12:00 fino al 15/10/2026, 23:00", required=True)
 
-    async def callback(self, interaction: discord.Interaction):
-        nuovo_stato = self.values[0]
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        if is_postgres:
-            cursor.execute("UPDATE ordini SET stato = %s WHERE id = %s", (nuovo_stato, self.order_id))
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        
+        full_text = f"{self.titolo.value}\n\n{self.descrizione.value}\n\nOrdinazioni aperte {self.date_validita.value}\n\n{self.hashtag.value}"
+        
+        target_channel_id = get_discord_channel_id(full_text)
+        channel = bot.get_channel(target_channel_id)
+        
+        if not channel:
+            await interaction.followup.send("❌ Canale Discord di destinazione non trovato per questo hashtag.", ephemeral=True)
+            return
+
+        cleaned, title, price = clean_message_text(full_text)
+        start_dt, end_dt = extract_dates(full_text)
+        
+        post_token = str(uuid.uuid4())
+        active_product_versions[title] = post_token
+        
+        view = ClaimView(title, price, start_dt, end_dt, post_token)
+        
+        if cleaned:
+            await channel.send(content=cleaned, view=view)
+            await interaction.followup.send("✅ Prodotto creato e pubblicato con successo nel canale di destinazione!", ephemeral=True)
         else:
-            cursor.execute("UPDATE ordini SET stato = ? WHERE id = ?", (nuovo_stato, self.order_id))
-        conn.commit()
-        cursor.close()
-        conn.close()
+            await interaction.followup.send("❌ Errore nella formattazione del testo del prodotto.", ephemeral=True)
 
-        await interaction.response.send_message(f"✅ Lo stato dell'ordine è stato aggiornato a: **{nuovo_stato}**", ephemeral=True)
+# Menu semplificato per #ordini (senza opzioni di modifica/eliminazione)
+class OrdiniAdminMenuView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
 
-class SingleOrderManagementView(discord.ui.View):
-    def __init__(self, order_id):
-        super().__init__(timeout=60)
-        self.order_id = order_id
-        self.add_item(StatusSelect(order_id))
+    @discord.ui.button(label="➕ Crea Nuovo Prodotto", style=discord.ButtonStyle.success)
+    async def crea_prodotto_callback(self, interaction: discord.Interaction, button: discord.ui.Button):
+        modal = CreaProdottoModal()
+        await interaction.response.send_modal(modal)
 
-    @discord.ui.button(label="Elimina Ordine", style=discord.ButtonStyle.danger, emoji="🗑️", row=1)
-    async def delete_order_callback(self, interaction: discord.Interaction, button: discord.ui.Button):
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        if is_postgres:
-            cursor.execute("DELETE FROM ordini WHERE id = %s", (self.order_id,))
-        else:
-            cursor.execute("DELETE FROM ordini WHERE id = ?", (self.order_id,))
-        conn.commit()
-        cursor.close()
-        conn.close()
-
-        await interaction.response.send_message(f"🗑 L'ordine è stato eliminato con successo dal database.", ephemeral=True)
-
-class OrderManagementView(discord.ui.View):
-    def __init__(self, orders):
-        super().__init__(timeout=180)
-        options = []
-        for row in orders[:25]:
-            oid, cliente, prodotto, quantita, prezzo_unitario, stato, messaggio, created_at = row
-            options.append(discord.SelectOption(
-                label=f"{prodotto[:25]}",
-                description=f"Cliente: {cliente} | Qty: {quantita} | Stato: {stato}",
-                value=str(oid)
-            ))
-         
-        class SelectOrder(discord.ui.Select):
-            def __init__(self, opts):
-                super().__init__(placeholder="Seleziona un ordine da gestire...", min_values=1, max_values=1, options=opts)
-            async def callback(self, inter: discord.Interaction):
-                selected_id = self.values[0]
-                view = SingleOrderManagementView(selected_id)
-                await inter.response.send_message(f"Gestione ordine selezionato (Modifica stato o elimina):", view=view, ephemeral=True)
-
-        self.add_item(SelectOrder(options))
-
-    @discord.ui.button(label="📥 Scarica Report Ordini", style=discord.ButtonStyle.secondary, emoji="📊", row=1)
-    async def download_db_callback(self, interaction: discord.Interaction, button: discord.ui.Button):
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT id, cliente, prodotto, quantita, prezzo_unitario, stato, messaggio, created_at FROM ordini ORDER BY created_at DESC")
-        rows = cursor.fetchall()
-        cursor.close()
-        conn.close()
-
-        csv_content = "ID;Cliente;Prodotto;Quantita;Prezzo Unitario;Stato;Messaggio;Data\n"
-        for r in rows:
-            csv_content += f"{r[0]};{r[1]};\"{r[2]}\";{r[3]};{r[4]};{r[5]};\"{r[6]}\";{r[7]}\n"
-         
-        file_bytes = io.BytesIO(csv_content.encode('utf-8'))
-        await interaction.response.send_message("Ecco il file di esportazione completo degli ordini:", file=discord.File(file_bytes, filename="ordini.csv"), ephemeral=True)
-
-    @discord.ui.button(label="📊 Genera Recap Ora", style=discord.ButtonStyle.primary, emoji="🕒", row=1)
+    @discord.ui.button(label="📊 Genera Recap Ora", style=discord.ButtonStyle.primary, emoji="🕒")
     async def manual_recap_callback(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True)
         await invia_recap_giornaliero_logic(interaction.channel)
         await interaction.followup.send("✅ Recap generato con successo!", ephemeral=True)
+
+@bot.command(name="menu")
+@commands.has_permissions(administrator=True)
+async def menu_ordini(ctx):
+    embed = discord.Embed(
+        title="⚙️ Pannello Gestione Ordini & Preorder", 
+        description="Utilizza i pulsanti sottostanti per creare un nuovo annuncio/prodotto oppure per generare manualmente il riepilogo degli ordini Discord delle ultime 24 ore.", 
+        color=discord.Color.blue()
+    )
+    view = OrdiniAdminMenuView()
+    await ctx.send(embed=embed, view=view)
 
 # 4. Logica di Smistamento, Markup e Validazione con hashtag
 def get_discord_channel_id(text):
@@ -556,68 +537,7 @@ def clean_message_text(text):
          
     return result, product_title, product_price
 
-@bot.command(name="menu")
-@commands.has_permissions(administrator=True)
-async def menu_ordini(ctx):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute('SELECT id, cliente, prodotto, quantita, prezzo_unitario, stato, messaggio, created_at FROM ordini ORDER BY created_at DESC LIMIT 25')
-    rows = cursor.fetchall()
-    cursor.close()
-    conn.close()
-
-    if not rows:
-        await ctx.send("📭 Nessun ordine registrato nel database.")
-        return
-
-    embed = discord.Embed(
-        title="📊 Menu Gestione Ordini", 
-        description="Usa il menu a tendina per selezionare un ordine da modificare o eliminare, oppure clicca sui pulsanti sottostanti per scaricare il report o generare il recap.", 
-        color=discord.Color.blue()
-    )
-    view = OrderManagementView(rows)
-    await ctx.send(embed=embed, view=view)
-
-# Comando per creare un prodotto manualmente da Discord
-class CreaProdottoModal(discord.ui.Modal, title="Crea Nuovo Prodotto"):
-    titolo = discord.ui.TextInput(label="Nome del Prodotto", placeholder="Es. 30th Celebration Booster Box", required=True)
-    descrizione = discord.ui.TextInput(label="Descrizione e Prezzo", placeholder="Es. Sealed\n205,00 € • 15 disponibili", style=discord.TextStyle.paragraph, required=True)
-    hashtag = discord.ui.TextInput(label="Canale / Categoria (Hashtag)", placeholder="Es. #pokemon, #onepiece, #dragonball...", required=True)
-    date_validita = discord.ui.TextInput(label="Periodo Validità", placeholder="dal 10/10/2026, 12:00 fino al 15/10/2026, 23:00", required=True)
-
-    async def on_submit(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
-        
-        full_text = f"{self.titolo.value}\n\n{self.descrizione.value}\n\nOrdinazioni aperte {self.date_validita.value}\n\n{self.hashtag.value}"
-        
-        target_channel_id = get_discord_channel_id(full_text)
-        channel = bot.get_channel(target_channel_id)
-        
-        if not channel:
-            await interaction.followup.send("❌ Canale Discord di destinazione non trovato per questo hashtag.", ephemeral=True)
-            return
-
-        cleaned, title, price = clean_message_text(full_text)
-        start_dt, end_dt = extract_dates(full_text)
-        
-        post_token = str(uuid.uuid4())
-        active_product_versions[title] = post_token
-        
-        view = ClaimView(title, price, start_dt, end_dt, post_token)
-        
-        if cleaned:
-            await channel.send(content=cleaned, view=view)
-            await interaction.followup.send("✅ Prodotto creato e pubblicato con successo nel canale di destinazione!", ephemeral=True)
-        else:
-            await interaction.followup.send("❌ Errore nella formattazione del testo del prodotto.", ephemeral=True)
-
-@bot.command(name="creaprodotto")
-@commands.has_permissions(administrator=True)
-async def creaprodotto(ctx):
-    modal = CreaProdottoModal()
-    await ctx.interaction.response.send_modal(modal) if ctx.interaction else await ctx.send("Usa il comando tramite interazione o modale.")
-
-# Avvio del client Telegram con StringSession
+# Avvio dello Userbot Telegram
 tg_client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
 
 @tg_client.on(events.NewMessage)
