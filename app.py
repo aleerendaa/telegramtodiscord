@@ -244,27 +244,41 @@ class OrderApprovalView(discord.ui.View):
 
 class ClaimView(discord.ui.View):
     def __init__(self, product_name, price, start_time=None, end_time=None, post_token=None):
-        super().__init__(timeout=86400)
+        # Impostiamo timeout=None per non far scadere mai il pulsante
+        super().__init__(timeout=None)
         self.product_name = product_name
         self.price = price
         self.start_time = start_time
         self.end_time = end_time
         self.post_token = post_token
 
-    @discord.ui.button(label="🛒 CLAIM", style=discord.ButtonStyle.success)
+    # Aggiungiamo un custom_id dinamico per rendere la view identificabile da Discord
+    @discord.ui.button(label="🛒 CLAIM", style=discord.ButtonStyle.success, custom_id="claim_button_persistent")
     async def claim_button_callback(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Controllo versione / repost
         if self.post_token and active_product_versions.get(self.product_name) != self.post_token:
-            await interaction.response.send_message("❌ Questo annuncio è stato aggiornato o ripostato con nuovi dettagli! Usa il pulsante nel messaggio più recente.", ephemeral=True)
+            await interaction.response.send_message(
+                "❌ Questo annuncio è stato aggiornato o ripostato con nuovi dettagli! Usa il pulsante nel messaggio più recente.", 
+                ephemeral=True
+            )
             return
 
         now = datetime.now(ITALY_TZ)
         
+        # Controllo se non ancora aperto
         if self.start_time and now < self.start_time:
-            await interaction.response.send_message(f"⏳ I preordini per這個 prodotto non sono ancora aperti!\nInizio previsto: {self.start_time.strftime('%d/%m/%Y alle %H:%M')}", ephemeral=True)
+            await interaction.response.send_message(
+                f"⏳ I preordini per questo prodotto non sono ancora aperti!\nInizio previsto: {self.start_time.strftime('%d/%m/%Y alle %H:%M')}", 
+                ephemeral=True
+            )
             return
             
+        # Controllo se scaduto
         if self.end_time and now > self.end_time:
-            await interaction.response.send_message(f"❌ I claim per questo prodotto sono chiusi, scadenza {self.end_time.strftime('%d/%m/%Y alle %H:%M')}, richiedi questo prodotto in <#1531772977073356881> e se disponibile sarà postato", ephemeral=True)
+            await interaction.response.send_message(
+                f"❌ I claim per questo prodotto sono chiusi, scadenza {self.end_time.strftime('%d/%m/%Y alle %H:%M')}, richiedi questo prodotto in <#1531772977073356881> e se disponibile sarà postato", 
+                ephemeral=True
+            )
             return
 
         modal = ClaimModal(self.product_name, self.price)
