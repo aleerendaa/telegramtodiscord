@@ -55,9 +55,9 @@ DISCORD_TOKEN = os.environ.get('DISCORD_TOKEN', '')
 
 CHANNEL_ADMIN_LOGS = 1533540767396794479
 CHANNEL_ORDINI = 1558069027329540156
-CHANNEL_POKEMON = 1561108240404578324
-CHANNEL_ONEPIECE = 1557071963489574932
-CHANNEL_DRAGONBALL = 1557071904211472594
+CHANNEL_POKEMON = 1557072021215776768
+CHANNEL_ONEPIECE = 1532111869832069242
+CHANNEL_DRAGONBALL = 1532112469567471938
 CHANNEL_PREORDER = 1532029845481984260
 CHANNEL_ALTRO = 1532112759490351244
 
@@ -491,40 +491,79 @@ def get_discord_channel_id(text):
         return CHANNEL_ALTRO
      
     text_lower = text.lower()
+    
+    # 1. Controlla prima se ci sono hashtag espliciti
     if "#pokemon" in text_lower:
         return CHANNEL_POKEMON
-    elif "#onepiece" in text_lower:
+    elif "#onepiece" in text_lower or "#one-piece" in text_lower:
         return CHANNEL_ONEPIECE
-    elif "#dragonball" in text_lower:
+    elif "#dragonball" in text_lower or "#dragon-ball" in text_lower:
         return CHANNEL_DRAGONBALL
     elif "#preorder" in text_lower or "#pre-order" in text_lower:
         return CHANNEL_PREORDER
-    else:
-        return CHANNEL_ALTRO
+
+    # 2. Riconoscimento intelligente tramite parole chiave specifiche per Brand:
+    
+    # ONE PIECE
+    parole_onepiece = [
+        "one piece", "onepiece", "op-", "op0", "eb-", "luffy", "zoro", "nami", 
+        "shanks", "law", "kid", "romance dawn", "paramount", "pillars", "flame", 
+        "500 years", "wings of captain", "extra booster", "flagship", "card game"
+    ]
+    if any(p in text_lower for p in parole_onepiece):
+        return CHANNEL_ONEPIECE
+
+    # DRAGON BALL
+    parole_dragonball = [
+        "dragon ball", "dragonball", "dbs", "dbz", "fusion world", "awakened", 
+        "goku", "vegeta", "gohan", "piccolo", "frieza", "broly", "saiyan"
+    ]
+    if any(p in text_lower for p in parole_dragonball):
+        return CHANNEL_DRAGONBALL
+
+    # POKÉMON
+    parole_pokemon = [
+        "pokemon", "pokémon", "booster box", "booster", "pikachu", "charizard", 
+        "eevee", "mew", "cinese", "giapponese", "sv", "s8a", "promo", "pack"
+    ]
+    if any(p in text_lower for p in parole_pokemon):
+        return CHANNEL_POKEMON
+
+    # Se non trova corrispondenze specifiche ma è un preordine generale
+    if "preorder" in text_lower or "pre-order" in text_lower or "prenotare" in text_lower:
+        return CHANNEL_PREORDER
+
+    return CHANNEL_ALTRO
 
 def is_valid_product_message(text):
     if not text:
         return False
-     
-    text_lower = text.lower()
-    has_hashtag = bool(re.search(r'#\w+', text_lower))
-    if not has_hashtag:
-        return False
-         
-    if not re.search(r'\d+([.,]\d{2})?\s*€', text):
-        return False
-         
-    return True
+    # Accetta qualsiasi messaggio che contenga un prezzo in Euro (€80.00 oppure 80,00 €)
+    ha_prezzo = bool(re.search(r'€\s*\d+([.,]\d{2})?', text) or re.search(r'\d+([.,]\d{2})?\s*€', text))
+    return ha_prezzo
 
 def extract_dates(text):
-    match = re.search(r'dal\s+(\d{2}/\d{2}/\d{4},\s*\d{2}:\d{2})\s+fino\s+al\s+(\d{2}/\d{2}/\d{4},\s*\d{2}:\d{2})', text, re.IGNORECASE)
+    # Cerca date del tipo "dal 21/10/2026 al 23/10/2026" oppure con orari "dal 21/10/2026, 12:00 fino al 23/10/2026, 23:00"
+    match = re.search(
+        r'dal\s+(\d{2}/\d{2}/\d{4})(?:,\s*(\d{2}:\d{2}))?\s+(?:fino\s+)?al\s+(\d{2}/\d{2}/\d{4})(?:,\s*(\d{2}:\d{2}))?', 
+        text, 
+        re.IGNORECASE
+    )
+    
     start_dt, end_dt = None, None
     if match:
         try:
-            start_dt = datetime.strptime(match.group(1), '%d/%m/%Y, %H:%M').replace(tzinfo=ITALY_TZ)
-            end_dt = datetime.strptime(match.group(2), '%d/%m/%Y, %H:%M').replace(tzinfo=ITALY_TZ)
-        except ValueError:
-            pass
+            d_start, t_start, d_end, t_end = match.groups()
+            
+            # Se l'orario manca, imposta 00:00 per l'inizio e 23:59 per la fine del giorno
+            t_start = t_start if t_start else "00:00"
+            t_end = t_end if t_end else "23:59"
+            
+            start_dt = datetime.strptime(f"{d_start}, {t_start}", '%d/%m/%Y, %H:%M').replace(tzinfo=ITALY_TZ)
+            end_dt = datetime.strptime(f"{d_end}, {t_end}", '%d/%m/%Y, %H:%M').replace(tzinfo=ITALY_TZ)
+        except ValueError as e:
+            print(f"Errore parsing date: {e}", flush=True)
+            
     return start_dt, end_dt
 
 def clean_message_text(text):
@@ -550,7 +589,11 @@ def clean_message_text(text):
         if (
             "Per prenotare" in line_str or 
             "/claim" in line_str or 
-            "Offerto da" in line_str
+            "Offerto da" in line_str or
+            "Come prenotare" in line_str or
+            "Rispondi a questo post" in line_str or
+            "Esempio: /claim" in line_str or
+            "Preorder inviato da" in line_str
         ):
             continue
              
@@ -581,6 +624,7 @@ def clean_message_text(text):
                 return match.group(0)
 
         updated_line = re.sub(r'(\d+([.,]\d{2})?)\s*€', replace_price, line_str)
+        updated_line = re.sub(r'€\s*(\d+([.,]\d{2})?)', replace_price, updated_line)
         cleaned_lines.append(updated_line)
      
     result = "\n".join(cleaned_lines).strip()
@@ -589,7 +633,7 @@ def clean_message_text(text):
          
     return result, product_title, product_price
 
-# Avvio dello Userbot Telegram con sequenziamento sequenziale pulito
+# Avvio dello Userbot Telegram con gestione sequenziale
 tg_client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
 
 @tg_client.on(events.NewMessage)
@@ -597,7 +641,7 @@ async def debug_all_messages(event):
     if event.chat_id != TELEGRAM_CHANNEL:
         return
 
-    # Usiamo il lock per elaborare un post/album alla volta
+    # Utilizziamo un lock per elaborare ciascun post/album uno alla volta
     async with processing_lock:
         text = event.raw_text or ""
         
@@ -607,11 +651,9 @@ async def debug_all_messages(event):
                 return
             processed_grouped_ids.add(event.grouped_id)
             
-            # Recuperiamo tutti i messaggi componenti l'album Telegram
             album_messages = await tg_client.get_messages(event.chat_id, ids=list(range(event.id - 10, event.id + 10)))
             group_msgs = [m for m in album_messages if m and m.grouped_id == event.grouped_id]
             
-            # Troviamo il testo principale tra le foto
             main_text = ""
             for m in group_msgs:
                 if m.raw_text and is_valid_product_message(m.raw_text):
@@ -632,7 +674,6 @@ async def debug_all_messages(event):
             active_product_versions[title] = post_token
             view = ClaimView(title, price, start_dt, end_dt, post_token)
 
-            # Scarica e invia le foto una per una
             for m in group_msgs:
                 if m.photo:
                     file_path = f"temp_{m.id}.jpg"
