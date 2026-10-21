@@ -501,7 +501,6 @@ def get_discord_channel_id(text):
     elif "#preorder" in text_lower or "#pre-order" in text_lower:
         return CHANNEL_PREORDER
 
-    # Riconoscimento intelligente tramite parole chiave
     parole_onepiece = [
         "one piece", "onepiece", "op-", "op0", "eb-", "luffy", "zoro", "nami", 
         "shanks", "law", "kid", "romance dawn", "paramount", "pillars", "flame", 
@@ -519,7 +518,7 @@ def get_discord_channel_id(text):
 
     parole_pokemon = [
         "pokemon", "pokémon", "booster box", "booster", "pikachu", "charizard", 
-        "eevee", "mew", "cinese", "giapponese", "sv", "s8a", "promo", "pack", "30th"
+        "eevee", "mew", "cinese", "giapponese", "sv", "s8a", "promo", "pack", "30th", "30thc"
     ]
     if any(p in text_lower for p in parole_pokemon):
         return CHANNEL_POKEMON
@@ -536,7 +535,7 @@ def is_valid_product_message(text):
     ha_prezzo = bool(re.search(r'€\s*\d+', text) or re.search(r'\d+\s*€', text))
     parole_chiave_prodotto = [
         "booster", "box", "sealed", "preorder", "pre-order", "disponibili", 
-        "pokemon", "pokémon", "one piece", "dragon ball", "cinese", "giapponese", "30th"
+        "pokemon", "pokémon", "one piece", "dragon ball", "cinese", "giapponese", "30th", "30thc"
     ]
     ha_parole_chiave = any(p in text_lower for p in parole_chiave_prodotto)
     return ha_prezzo and ha_parole_chiave
@@ -575,26 +574,21 @@ def clean_message_text(text):
         line_str = re.sub(r'#\w+', '', line)
         line_str = re.sub(r'🇯🇵', '', line_str).strip()
          
-        if line.strip() == "🇯🇵" or line.strip() == "#giapponese":
+        if line.strip() in ["🇯🇵", "#giapponese"]:
             continue
          
         if not line_str:
             cleaned_lines.append("")
             continue
              
-        if (
-            "Per prenotare" in line_str or 
-            "/claim" in line_str or 
-            "Offerto da" in line_str or
-            "Come prenotare" in line_str or
-            "Rispondi a questo post" in line_str or
-            "Esempio: /claim" in line_str or
-            "Preorder inviato da" in line_str
-        ):
+        if any(term in line_str for term in [
+            "Per prenotare", "/claim", "Offerto da", "Come prenotare", 
+            "Rispondi a questo post", "Esempio: /claim", "Preorder inviato da"
+        ]):
             continue
              
         if i == 0 and line_str:
-            product_title = line_str
+            product_title = re.sub(r'^[🎴💰📦📅🛒📩]\s*', '', line_str)
 
         def replace_price(match):
             nonlocal product_price
@@ -629,7 +623,7 @@ def clean_message_text(text):
          
     return result, product_title, product_price
 
-# Avvio dello Userbot Telegram con gestione sequenziale e log di debug
+# Avvio dello Userbot Telegram con sequenziamento atomico per post con foto + testo
 tg_client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
 
 @tg_client.on(events.NewMessage)
@@ -637,10 +631,14 @@ async def debug_all_messages(event):
     if event.chat_id != TELEGRAM_CHANNEL:
         return
 
-    text = event.raw_text or ""
-    print(f"--- RICEVUTO DA TELEGRAM ---\n{text}\nIsValid: {is_valid_product_message(text)}", flush=True)
-
     async with processing_lock:
+        text = event.raw_text or ""
+        
+        # Ignora messaggi che non sono post validi di prodotto
+        if not is_valid_product_message(text):
+            return
+
+        # Gestione degli Album (più foto insieme con un testo)
         if event.grouped_id:
             if event.grouped_id in processed_grouped_ids:
                 return
@@ -649,14 +647,11 @@ async def debug_all_messages(event):
             album_messages = await tg_client.get_messages(event.chat_id, ids=list(range(event.id - 10, event.id + 10)))
             group_msgs = [m for m in album_messages if m and m.grouped_id == event.grouped_id]
             
-            main_text = ""
+            main_text = text
             for m in group_msgs:
                 if m.raw_text and is_valid_product_message(m.raw_text):
                     main_text = m.raw_text
                     break
-            
-            if not main_text:
-                return
 
             target_channel_id = get_discord_channel_id(main_text)
             channel = bot.get_channel(target_channel_id)
@@ -669,6 +664,7 @@ async def debug_all_messages(event):
             active_product_versions[title] = post_token
             view = ClaimView(title, price, start_dt, end_dt, post_token)
 
+            # Scarica e pubblica tutte le foto dell'album prima del testo
             for m in group_msgs:
                 if m.photo:
                     file_path = f"temp_{m.id}.jpg"
@@ -683,31 +679,34 @@ async def debug_all_messages(event):
                 await channel.send(content=cleaned, view=view)
                 await asyncio.sleep(1.5)
 
+        # Gestione Post Singolo (foto + testo associato)
         else:
-            if is_valid_product_message(text):
-                target_channel_id = get_discord_channel_id(text)
-                channel = bot.get_channel(target_channel_id)
-                if channel:
-                    cleaned, title, price = clean_message_text(text)
-                    start_dt, end_dt = extract_dates(text)
-                    
-                    post_token = str(uuid.uuid4())
-                    active_product_versions[title] = post_token
-                    
-                    view = ClaimView(title, price, start_dt, end_dt, post_token)
-                     
-                    if event.photo:
-                        file_path = f"temp_{event.id}.jpg"
-                        path = await event.download_media(file=file_path)
-                        if path:
-                            await channel.send(file=discord.File(path))
-                            await asyncio.sleep(1.0)
-                            if os.path.exists(path):
-                                os.remove(path)
-                      
-                    if cleaned:
-                        await channel.send(content=cleaned, view=view)
-                        await asyncio.sleep(1.5)
+            target_channel_id = get_discord_channel_id(text)
+            channel = bot.get_channel(target_channel_id)
+            if not channel:
+                return
+
+            cleaned, title, price = clean_message_text(text)
+            start_dt, end_dt = extract_dates(text)
+            
+            post_token = str(uuid.uuid4())
+            active_product_versions[title] = post_token
+            
+            view = ClaimView(title, price, start_dt, end_dt, post_token)
+             
+            # Scarica la foto del messaggio e la invia prima del testo pulito
+            if event.photo:
+                file_path = f"temp_{event.id}.jpg"
+                path = await event.download_media(file=file_path)
+                if path:
+                    await channel.send(file=discord.File(path))
+                    await asyncio.sleep(1.0)
+                    if os.path.exists(path):
+                        os.remove(path)
+              
+            if cleaned:
+                await channel.send(content=cleaned, view=view)
+                await asyncio.sleep(1.5)
 
 @bot.event
 async def on_ready():
