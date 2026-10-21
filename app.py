@@ -498,15 +498,27 @@ def get_discord_channel_id(text):
      
     text_lower = text.lower()
     
+    # 1. HASHTAG ESPLICITI (Hanno sempre massima priorità)
     if "#pokemon" in text_lower:
         return CHANNEL_POKEMON
     elif "#onepiece" in text_lower or "#one-piece" in text_lower:
         return CHANNEL_ONEPIECE
     elif "#dragonball" in text_lower or "#dragon-ball" in text_lower:
         return CHANNEL_DRAGONBALL
+    elif "#altro" in text_lower:
+        return CHANNEL_ALTRO
     elif "#preorder" in text_lower or "#pre-order" in text_lower:
         return CHANNEL_PREORDER
 
+    # 2. KEYWORD DIRETTAMENTE PER CANALE ALTRO (Blind Box, Funism, Statue, Figures)
+    parole_altro = [
+        "funism", "blind box", "figure", "figura", "statua", "statue", 
+        "gadget", "plush", "peluche", "keychain", "portachiavi", "displaycase"
+    ]
+    if any(p in text_lower for p in parole_altro):
+        return CHANNEL_ALTRO
+
+    # 3. KEYWORD SPECIFICHE FRANCHISE
     parole_onepiece = [
         "one piece", "onepiece", "op-", "op0", "eb-", "luffy", "zoro", "nami", 
         "shanks", "law", "kid", "romance dawn", "paramount", "pillars", "flame", 
@@ -522,9 +534,11 @@ def get_discord_channel_id(text):
     if any(p in text_lower for p in parole_dragonball):
         return CHANNEL_DRAGONBALL
 
+    # Per Pokémon richiediamo termini specifici del TCG o nomi di espansioni
     parole_pokemon = [
-        "pokemon", "pokémon", "booster box", "booster", "pikachu", "charizard", 
-        "eevee", "mew", "cinese", "giapponese", "sv", "s8a", "promo", "pack", "30th", "30thc"
+        "pokemon tcg", "pokémon tcg", "booster box", "booster pack", "pikachu", 
+        "charizard", "eevee", "mew", "cinese tcg", "giapponese tcg", "sv", "s8a", 
+        "30th celebration", "30thc"
     ]
     if any(p in text_lower for p in parole_pokemon):
         return CHANNEL_POKEMON
@@ -542,7 +556,7 @@ def is_valid_product_message(text):
     parole_chiave_prodotto = [
         "booster", "box", "sealed", "preorder", "pre-order", "disponibili", 
         "pokemon", "pokémon", "one piece", "dragon ball", "cinese", "giapponese", 
-        "30th", "30thc", "prezzo"
+        "30th", "30thc", "prezzo", "funism", "blind box"
     ]
     ha_parole_chiave = any(p in text_lower for p in parole_chiave_prodotto)
     return ha_prezzo and ha_parole_chiave
@@ -630,7 +644,7 @@ def clean_message_text(text):
          
     return result, product_title, product_price
 
-# Userbot Telegram con supporto completo agli album multi-foto
+# Userbot Telegram con instradamento intelligente del canale
 tg_client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
 
 @tg_client.on(events.NewMessage)
@@ -639,20 +653,16 @@ async def debug_all_messages(event):
         return
 
     async with processing_lock:
-        # 1. GESTIONE ALBUM (PIÙ FOTO INSIEME)
         if event.grouped_id:
             if event.grouped_id in processed_grouped_ids:
                 return
             processed_grouped_ids.add(event.grouped_id)
             
-            # Aspetta una frazione di secondo per dare tempo a Telegram di caricare tutti i messaggi dell'album
             await asyncio.sleep(1.0)
             
-            # Recupera i messaggi recenti dell'album
             album_messages = await tg_client.get_messages(event.chat_id, ids=list(range(event.id - 10, event.id + 10)))
             group_msgs = [m for m in album_messages if m and m.grouped_id == event.grouped_id]
             
-            # Trova il messaggio con il testo del prodotto
             main_text = ""
             for m in group_msgs:
                 txt = m.raw_text or m.message or ""
@@ -680,7 +690,6 @@ async def debug_all_messages(event):
             active_product_versions[title] = post_token
             view = ClaimView(title, price, start_dt, end_dt, post_token)
 
-            # Scarica e invia TUTTE le foto dell'album su Discord
             for m in group_msgs:
                 if m.photo:
                     file_path = f"temp_{m.id}.jpg"
@@ -696,7 +705,6 @@ async def debug_all_messages(event):
                 print(f"🚀 Album pubblicato con successo in Discord nel canale {target_channel_id}!", flush=True)
                 await asyncio.sleep(1.5)
 
-        # 2. GESTIONE POST SINGOLO (FOTO SINGOLA + TESTO)
         else:
             main_text = event.raw_text or event.message.message or ""
             valid = is_valid_product_message(main_text)
