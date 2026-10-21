@@ -55,11 +55,11 @@ DISCORD_TOKEN = os.environ.get('DISCORD_TOKEN', '')
 
 CHANNEL_ADMIN_LOGS = 1533540767396794479
 CHANNEL_ORDINI = 1558069027329540156
-CHANNEL_POKEMON = 1561108240404578324   # <- AGGIORNATO
-CHANNEL_ONEPIECE = 1557071963489574932  # <- AGGIORNATO
-CHANNEL_DRAGONBALL = 1557071904211472594 # <- AGGIORNATO
+CHANNEL_POKEMON = 1561108240404578324
+CHANNEL_ONEPIECE = 1557071963489574932
+CHANNEL_DRAGONBALL = 1557071904211472594
 CHANNEL_PREORDER = 1532029845481984260
-CHANNEL_ALTRO = 1532112759490351244     # <- CONFERMATO
+CHANNEL_ALTRO = 1532112759490351244
 
 def get_db_connection():
     if is_postgres:
@@ -630,7 +630,7 @@ def clean_message_text(text):
          
     return result, product_title, product_price
 
-# Userbot Telegram
+# Userbot Telegram con supporto completo agli album multi-foto
 tg_client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
 
 @tg_client.on(events.NewMessage)
@@ -639,45 +639,103 @@ async def debug_all_messages(event):
         return
 
     async with processing_lock:
-        main_text = event.raw_text or event.message.message or ""
-        valid = is_valid_product_message(main_text)
+        # 1. GESTIONE ALBUM (PIÙ FOTO INSIEME)
+        if event.grouped_id:
+            if event.grouped_id in processed_grouped_ids:
+                return
+            processed_grouped_ids.add(event.grouped_id)
+            
+            # Aspetta una frazione di secondo per dare tempo a Telegram di caricare tutti i messaggi dell'album
+            await asyncio.sleep(1.0)
+            
+            # Recupera i messaggi recenti dell'album
+            album_messages = await tg_client.get_messages(event.chat_id, ids=list(range(event.id - 10, event.id + 10)))
+            group_msgs = [m for m in album_messages if m and m.grouped_id == event.grouped_id]
+            
+            # Trova il messaggio con il testo del prodotto
+            main_text = ""
+            for m in group_msgs:
+                txt = m.raw_text or m.message or ""
+                if is_valid_product_message(txt):
+                    main_text = txt
+                    break
+            
+            if not is_valid_product_message(main_text):
+                return
 
-        if not valid:
-            return
+            target_channel_id = get_discord_channel_id(main_text)
+            channel = bot.get_channel(target_channel_id)
+            if not channel:
+                try:
+                    channel = await bot.fetch_channel(target_channel_id)
+                except Exception as e:
+                    print(f"❌ Impossibile trovare canale Discord {target_channel_id}: {e}", flush=True)
 
-        target_channel_id = get_discord_channel_id(main_text)
-        
-        channel = bot.get_channel(target_channel_id)
-        if not channel:
-            try:
-                channel = await bot.fetch_channel(target_channel_id)
-            except Exception as e:
-                print(f"❌ Impossibile trovare o accedere al canale Discord {target_channel_id}: {e}", flush=True)
+            if not channel:
+                return
 
-        if not channel:
-            return
+            cleaned, title, price = clean_message_text(main_text)
+            start_dt, end_dt = extract_dates(main_text)
+            post_token = str(uuid.uuid4())
+            active_product_versions[title] = post_token
+            view = ClaimView(title, price, start_dt, end_dt, post_token)
 
-        cleaned, title, price = clean_message_text(main_text)
-        start_dt, end_dt = extract_dates(main_text)
-        
-        post_token = str(uuid.uuid4())
-        active_product_versions[title] = post_token
-        
-        view = ClaimView(title, price, start_dt, end_dt, post_token)
-         
-        if event.photo:
-            file_path = f"temp_{event.id}.jpg"
-            path = await event.download_media(file=file_path)
-            if path:
-                await channel.send(file=discord.File(path))
-                await asyncio.sleep(0.8)
-                if os.path.exists(path):
-                    os.remove(path)
-          
-        if cleaned:
-            await channel.send(content=cleaned, view=view)
-            print(f"🚀 Prodotto pubblicato con successo in Discord nel canale {target_channel_id}!", flush=True)
-            await asyncio.sleep(1.5)
+            # Scarica e invia TUTTE le foto dell'album su Discord
+            for m in group_msgs:
+                if m.photo:
+                    file_path = f"temp_{m.id}.jpg"
+                    path = await m.download_media(file=file_path)
+                    if path:
+                        await channel.send(file=discord.File(path))
+                        await asyncio.sleep(0.8)
+                        if os.path.exists(path):
+                            os.remove(path)
+
+            if cleaned:
+                await channel.send(content=cleaned, view=view)
+                print(f"🚀 Album pubblicato con successo in Discord nel canale {target_channel_id}!", flush=True)
+                await asyncio.sleep(1.5)
+
+        # 2. GESTIONE POST SINGOLO (FOTO SINGOLA + TESTO)
+        else:
+            main_text = event.raw_text or event.message.message or ""
+            valid = is_valid_product_message(main_text)
+
+            if not valid:
+                return
+
+            target_channel_id = get_discord_channel_id(main_text)
+            channel = bot.get_channel(target_channel_id)
+            if not channel:
+                try:
+                    channel = await bot.fetch_channel(target_channel_id)
+                except Exception as e:
+                    print(f"❌ Impossibile trovare canale Discord {target_channel_id}: {e}", flush=True)
+
+            if not channel:
+                return
+
+            cleaned, title, price = clean_message_text(main_text)
+            start_dt, end_dt = extract_dates(main_text)
+            
+            post_token = str(uuid.uuid4())
+            active_product_versions[title] = post_token
+            
+            view = ClaimView(title, price, start_dt, end_dt, post_token)
+             
+            if event.photo:
+                file_path = f"temp_{event.id}.jpg"
+                path = await event.download_media(file=file_path)
+                if path:
+                    await channel.send(file=discord.File(path))
+                    await asyncio.sleep(0.8)
+                    if os.path.exists(path):
+                        os.remove(path)
+              
+            if cleaned:
+                await channel.send(content=cleaned, view=view)
+                print(f"🚀 Post singolo pubblicato con successo in Discord nel canale {target_channel_id}!", flush=True)
+                await asyncio.sleep(1.5)
 
 @bot.event
 async def on_ready():
