@@ -492,7 +492,6 @@ def get_discord_channel_id(text):
      
     text_lower = text.lower()
     
-    # 1. Controlla prima se ci sono hashtag espliciti
     if "#pokemon" in text_lower:
         return CHANNEL_POKEMON
     elif "#onepiece" in text_lower or "#one-piece" in text_lower:
@@ -502,9 +501,7 @@ def get_discord_channel_id(text):
     elif "#preorder" in text_lower or "#pre-order" in text_lower:
         return CHANNEL_PREORDER
 
-    # 2. Riconoscimento intelligente tramite parole chiave specifiche per Brand:
-    
-    # ONE PIECE
+    # Riconoscimento intelligente tramite parole chiave
     parole_onepiece = [
         "one piece", "onepiece", "op-", "op0", "eb-", "luffy", "zoro", "nami", 
         "shanks", "law", "kid", "romance dawn", "paramount", "pillars", "flame", 
@@ -513,7 +510,6 @@ def get_discord_channel_id(text):
     if any(p in text_lower for p in parole_onepiece):
         return CHANNEL_ONEPIECE
 
-    # DRAGON BALL
     parole_dragonball = [
         "dragon ball", "dragonball", "dbs", "dbz", "fusion world", "awakened", 
         "goku", "vegeta", "gohan", "piccolo", "frieza", "broly", "saiyan"
@@ -521,15 +517,13 @@ def get_discord_channel_id(text):
     if any(p in text_lower for p in parole_dragonball):
         return CHANNEL_DRAGONBALL
 
-    # POKÉMON
     parole_pokemon = [
         "pokemon", "pokémon", "booster box", "booster", "pikachu", "charizard", 
-        "eevee", "mew", "cinese", "giapponese", "sv", "s8a", "promo", "pack"
+        "eevee", "mew", "cinese", "giapponese", "sv", "s8a", "promo", "pack", "30th"
     ]
     if any(p in text_lower for p in parole_pokemon):
         return CHANNEL_POKEMON
 
-    # Se non trova corrispondenze specifiche ma è un preordine generale
     if "preorder" in text_lower or "pre-order" in text_lower or "prenotare" in text_lower:
         return CHANNEL_PREORDER
 
@@ -538,23 +532,16 @@ def get_discord_channel_id(text):
 def is_valid_product_message(text):
     if not text:
         return False
-    
     text_lower = text.lower()
-    
-    # 1. Verifica che ci sia un'indicazione di prezzo (cerca il simbolo € seguito o preceduto da cifre)
     ha_prezzo = bool(re.search(r'€\s*\d+', text) or re.search(r'\d+\s*€', text))
-    
-    # 2. Verifica che contenga parole chiave tipiche di un prodotto/preorder
     parole_chiave_prodotto = [
         "booster", "box", "sealed", "preorder", "pre-order", "disponibili", 
-        "pokemon", "pokémon", "one piece", "dragon ball", "cinese", "giapponese"
+        "pokemon", "pokémon", "one piece", "dragon ball", "cinese", "giapponese", "30th"
     ]
     ha_parole_chiave = any(p in text_lower for p in parole_chiave_prodotto)
-    
     return ha_prezzo and ha_parole_chiave
 
 def extract_dates(text):
-    # Cerca date del tipo "dal 21/10/2026 al 23/10/2026" oppure con orari "dal 21/10/2026, 12:00 fino al 23/10/2026, 23:00"
     match = re.search(
         r'dal\s+(\d{2}/\d{2}/\d{4})(?:,\s*(\d{2}:\d{2}))?\s+(?:fino\s+)?al\s+(\d{2}/\d{2}/\d{4})(?:,\s*(\d{2}:\d{2}))?', 
         text, 
@@ -565,8 +552,6 @@ def extract_dates(text):
     if match:
         try:
             d_start, t_start, d_end, t_end = match.groups()
-            
-            # Se l'orario manca, imposta 00:00 per l'inizio e 23:59 per la fine del giorno
             t_start = t_start if t_start else "00:00"
             t_end = t_end if t_end else "23:59"
             
@@ -644,7 +629,7 @@ def clean_message_text(text):
          
     return result, product_title, product_price
 
-# Avvio dello Userbot Telegram con gestione sequenziale
+# Avvio dello Userbot Telegram con gestione sequenziale e log di debug
 tg_client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
 
 @tg_client.on(events.NewMessage)
@@ -652,11 +637,10 @@ async def debug_all_messages(event):
     if event.chat_id != TELEGRAM_CHANNEL:
         return
 
-    # Utilizziamo un lock per elaborare ciascun post/album uno alla volta
+    text = event.raw_text or ""
+    print(f"--- RICEVUTO DA TELEGRAM ---\n{text}\nIsValid: {is_valid_product_message(text)}", flush=True)
+
     async with processing_lock:
-        text = event.raw_text or ""
-        
-        # Gestione Album Telegram (grouped_id)
         if event.grouped_id:
             if event.grouped_id in processed_grouped_ids:
                 return
@@ -700,7 +684,6 @@ async def debug_all_messages(event):
                 await asyncio.sleep(1.5)
 
         else:
-            # Gestione messaggio singolo normale
             if is_valid_product_message(text):
                 target_channel_id = get_discord_channel_id(text)
                 channel = bot.get_channel(target_channel_id)
