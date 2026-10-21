@@ -532,10 +532,15 @@ def is_valid_product_message(text):
     if not text:
         return False
     text_lower = text.lower()
+    
+    # Controlla l'esistenza di un prezzo
     ha_prezzo = bool(re.search(r'€\s*\d+', text) or re.search(r'\d+\s*€', text))
+    
+    # Parole chiave estese per coprire tutte le diciture
     parole_chiave_prodotto = [
         "booster", "box", "sealed", "preorder", "pre-order", "disponibili", 
-        "pokemon", "pokémon", "one piece", "dragon ball", "cinese", "giapponese", "30th", "30thc"
+        "pokemon", "pokémon", "one piece", "dragon ball", "cinese", "giapponese", 
+        "30th", "30thc", "prezzo"
     ]
     ha_parole_chiave = any(p in text_lower for p in parole_chiave_prodotto)
     return ha_prezzo and ha_parole_chiave
@@ -623,7 +628,7 @@ def clean_message_text(text):
          
     return result, product_title, product_price
 
-# Avvio dello Userbot Telegram con sequenziamento atomico per post con foto + testo
+# Userbot Telegram con risoluzione dinamica delle foto e dei post
 tg_client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
 
 @tg_client.on(events.NewMessage)
@@ -632,13 +637,10 @@ async def debug_all_messages(event):
         return
 
     async with processing_lock:
-        text = event.raw_text or ""
+        # Tenta di recuperare il testo dal messaggio o dalla caption dell'immagine
+        main_text = event.raw_text or event.message.message or ""
         
-        # Ignora messaggi che non sono post validi di prodotto
-        if not is_valid_product_message(text):
-            return
-
-        # Gestione degli Album (più foto insieme con un testo)
+        # Gestione degli Album (grouped_id)
         if event.grouped_id:
             if event.grouped_id in processed_grouped_ids:
                 return
@@ -647,11 +649,14 @@ async def debug_all_messages(event):
             album_messages = await tg_client.get_messages(event.chat_id, ids=list(range(event.id - 10, event.id + 10)))
             group_msgs = [m for m in album_messages if m and m.grouped_id == event.grouped_id]
             
-            main_text = text
             for m in group_msgs:
-                if m.raw_text and is_valid_product_message(m.raw_text):
-                    main_text = m.raw_text
+                txt = m.raw_text or m.message or ""
+                if is_valid_product_message(txt):
+                    main_text = txt
                     break
+            
+            if not is_valid_product_message(main_text):
+                return
 
             target_channel_id = get_discord_channel_id(main_text)
             channel = bot.get_channel(target_channel_id)
@@ -664,48 +669,51 @@ async def debug_all_messages(event):
             active_product_versions[title] = post_token
             view = ClaimView(title, price, start_dt, end_dt, post_token)
 
-            # Scarica e pubblica tutte le foto dell'album prima del testo
             for m in group_msgs:
                 if m.photo:
                     file_path = f"temp_{m.id}.jpg"
                     path = await m.download_media(file=file_path)
                     if path:
                         await channel.send(file=discord.File(path))
-                        await asyncio.sleep(1.0)
+                        await asyncio.sleep(0.8)
                         if os.path.exists(path):
                             os.remove(path)
 
             if cleaned:
                 await channel.send(content=cleaned, view=view)
+                print(f"✅ Album pubblicato in {target_channel_id}", flush=True)
                 await asyncio.sleep(1.5)
 
-        # Gestione Post Singolo (foto + testo associato)
+        # Gestione Post Singolo (Foto + Testo)
         else:
-            target_channel_id = get_discord_channel_id(text)
+            if not is_valid_product_message(main_text):
+                return
+
+            target_channel_id = get_discord_channel_id(main_text)
             channel = bot.get_channel(target_channel_id)
             if not channel:
                 return
 
-            cleaned, title, price = clean_message_text(text)
-            start_dt, end_dt = extract_dates(text)
+            cleaned, title, price = clean_message_text(main_text)
+            start_dt, end_dt = extract_dates(main_text)
             
             post_token = str(uuid.uuid4())
             active_product_versions[title] = post_token
             
             view = ClaimView(title, price, start_dt, end_dt, post_token)
              
-            # Scarica la foto del messaggio e la invia prima del testo pulito
             if event.photo:
                 file_path = f"temp_{event.id}.jpg"
                 path = await event.download_media(file=file_path)
                 if path:
                     await channel.send(file=discord.File(path))
-                    await asyncio.sleep(1.0)
+                    await asyncio.sleep(0.8)
                     if os.path.exists(path):
                         os.remove(path)
               
             if cleaned:
                 await channel.send(content=cleaned, view=view)
+                print(f"✅ Post pubblicato in {target_channel_id}", flush=True)
                 await asyncio.sleep(1.5)
 
 @bot.event
