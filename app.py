@@ -532,11 +532,7 @@ def is_valid_product_message(text):
     if not text:
         return False
     text_lower = text.lower()
-    
-    # Controlla l'esistenza di un prezzo
     ha_prezzo = bool(re.search(r'€\s*\d+', text) or re.search(r'\d+\s*€', text))
-    
-    # Parole chiave estese per coprire tutte le diciture
     parole_chiave_prodotto = [
         "booster", "box", "sealed", "preorder", "pre-order", "disponibili", 
         "pokemon", "pokémon", "one piece", "dragon ball", "cinese", "giapponese", 
@@ -628,97 +624,60 @@ def clean_message_text(text):
          
     return result, product_title, product_price
 
-# Userbot Telegram con risoluzione dinamica delle foto e dei post
+# Userbot Telegram con diagnostica globale degli eventi
 tg_client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
 
 @tg_client.on(events.NewMessage)
 async def debug_all_messages(event):
+    # Questo log stamperà QUALSIASI messaggio arrivi in qualsiasi chat monitorata dallo userbot
+    print(f"📥 [TELEGRAM EVENT] Ricevuto messaggio da Chat ID: {event.chat_id}", flush=True)
+    
     if event.chat_id != TELEGRAM_CHANNEL:
         return
 
+    print(f"🎯 Il messaggio proviene dal canale corretto ({TELEGRAM_CHANNEL})!", flush=True)
+
     async with processing_lock:
-        # Tenta di recuperare il testo dal messaggio o dalla caption dell'immagine
         main_text = event.raw_text or event.message.message or ""
+        print(f"📄 Testo letto: {main_text[:60]}...", flush=True)
         
-        # Gestione degli Album (grouped_id)
-        if event.grouped_id:
-            if event.grouped_id in processed_grouped_ids:
-                return
-            processed_grouped_ids.add(event.grouped_id)
-            
-            album_messages = await tg_client.get_messages(event.chat_id, ids=list(range(event.id - 10, event.id + 10)))
-            group_msgs = [m for m in album_messages if m and m.grouped_id == event.grouped_id]
-            
-            for m in group_msgs:
-                txt = m.raw_text or m.message or ""
-                if is_valid_product_message(txt):
-                    main_text = txt
-                    break
-            
-            if not is_valid_product_message(main_text):
-                return
+        valid = is_valid_product_message(main_text)
+        print(f"🔍 Esito is_valid_product_message: {valid}", flush=True)
 
-            target_channel_id = get_discord_channel_id(main_text)
-            channel = bot.get_channel(target_channel_id)
-            if not channel:
-                return
+        if not valid:
+            return
 
-            cleaned, title, price = clean_message_text(main_text)
-            start_dt, end_dt = extract_dates(main_text)
-            post_token = str(uuid.uuid4())
-            active_product_versions[title] = post_token
-            view = ClaimView(title, price, start_dt, end_dt, post_token)
+        target_channel_id = get_discord_channel_id(main_text)
+        channel = bot.get_channel(target_channel_id)
+        if not channel:
+            print(f"❌ Canale Discord ID {target_channel_id} non trovato!", flush=True)
+            return
 
-            for m in group_msgs:
-                if m.photo:
-                    file_path = f"temp_{m.id}.jpg"
-                    path = await m.download_media(file=file_path)
-                    if path:
-                        await channel.send(file=discord.File(path))
-                        await asyncio.sleep(0.8)
-                        if os.path.exists(path):
-                            os.remove(path)
-
-            if cleaned:
-                await channel.send(content=cleaned, view=view)
-                print(f"✅ Album pubblicato in {target_channel_id}", flush=True)
-                await asyncio.sleep(1.5)
-
-        # Gestione Post Singolo (Foto + Testo)
-        else:
-            if not is_valid_product_message(main_text):
-                return
-
-            target_channel_id = get_discord_channel_id(main_text)
-            channel = bot.get_channel(target_channel_id)
-            if not channel:
-                return
-
-            cleaned, title, price = clean_message_text(main_text)
-            start_dt, end_dt = extract_dates(main_text)
-            
-            post_token = str(uuid.uuid4())
-            active_product_versions[title] = post_token
-            
-            view = ClaimView(title, price, start_dt, end_dt, post_token)
-             
-            if event.photo:
-                file_path = f"temp_{event.id}.jpg"
-                path = await event.download_media(file=file_path)
-                if path:
-                    await channel.send(file=discord.File(path))
-                    await asyncio.sleep(0.8)
-                    if os.path.exists(path):
-                        os.remove(path)
-              
-            if cleaned:
-                await channel.send(content=cleaned, view=view)
-                print(f"✅ Post pubblicato in {target_channel_id}", flush=True)
-                await asyncio.sleep(1.5)
+        cleaned, title, price = clean_message_text(main_text)
+        start_dt, end_dt = extract_dates(main_text)
+        
+        post_token = str(uuid.uuid4())
+        active_product_versions[title] = post_token
+        
+        view = ClaimView(title, price, start_dt, end_dt, post_token)
+         
+        if event.photo:
+            file_path = f"temp_{event.id}.jpg"
+            path = await event.download_media(file=file_path)
+            if path:
+                await channel.send(file=discord.File(path))
+                await asyncio.sleep(0.8)
+                if os.path.exists(path):
+                    os.remove(path)
+          
+        if cleaned:
+            await channel.send(content=cleaned, view=view)
+            print(f"🚀 Prodotto pubblicato con successo in Discord nel canale {target_channel_id}!", flush=True)
+            await asyncio.sleep(1.5)
 
 @bot.event
 async def on_ready():
-    print(f"Bot Discord connesso come {bot.user}", flush=True)
+    print(f"🤖 Bot Discord connesso come {bot.user}", flush=True)
     
     bot.add_view(OrdiniAdminMenuView())
     bot.add_view(OrderApprovalView())
@@ -730,12 +689,13 @@ async def on_ready():
     if not tg_client.is_connected():
         try:
             await tg_client.start()
-            print("Userbot Telegram avviato e in ascolto...", flush=True)
+            me = await tg_client.get_me()
+            print(f"✅ Userbot Telegram avviato con successo come: {me.first_name} (ID: {me.id})", flush=True)
         except Exception as e:
-            print(f"Errore nell'avvio dello userbot Telegram: {e}", flush=True)
+            print(f"❌ Errore nell'avvio dello userbot Telegram: {e}", flush=True)
 
 if __name__ == "__main__":
     if not DISCORD_TOKEN:
-        print("Errore: DISCORD_TOKEN non trovato nelle variabili d'ambiente!", flush=True)
+        print("❌ Errore: DISCORD_TOKEN non trovato nelle variabili d'ambiente!", flush=True)
     else:
         bot.run(DISCORD_TOKEN)
