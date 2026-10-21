@@ -538,9 +538,20 @@ def get_discord_channel_id(text):
 def is_valid_product_message(text):
     if not text:
         return False
-    # Accetta qualsiasi messaggio che contenga un prezzo in Euro (€80.00 oppure 80,00 €)
-    ha_prezzo = bool(re.search(r'€\s*\d+([.,]\d{2})?', text) or re.search(r'\d+([.,]\d{2})?\s*€', text))
-    return ha_prezzo
+    
+    text_lower = text.lower()
+    
+    # 1. Verifica che ci sia un'indicazione di prezzo (cerca il simbolo € seguito o preceduto da cifre)
+    ha_prezzo = bool(re.search(r'€\s*\d+', text) or re.search(r'\d+\s*€', text))
+    
+    # 2. Verifica che contenga parole chiave tipiche di un prodotto/preorder
+    parole_chiave_prodotto = [
+        "booster", "box", "sealed", "preorder", "pre-order", "disponibili", 
+        "pokemon", "pokémon", "one piece", "dragon ball", "cinese", "giapponese"
+    ]
+    ha_parole_chiave = any(p in text_lower for p in parole_chiave_prodotto)
+    
+    return ha_prezzo and ha_parole_chiave
 
 def extract_dates(text):
     # Cerca date del tipo "dal 21/10/2026 al 23/10/2026" oppure con orari "dal 21/10/2026, 12:00 fino al 23/10/2026, 23:00"
