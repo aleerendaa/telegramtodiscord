@@ -55,11 +55,11 @@ DISCORD_TOKEN = os.environ.get('DISCORD_TOKEN', '')
 
 CHANNEL_ADMIN_LOGS = 1533540767396794479
 CHANNEL_ORDINI = 1558069027329540156
-CHANNEL_POKEMON = 1557072021215776768
-CHANNEL_ONEPIECE = 1532111869832069242
-CHANNEL_DRAGONBALL = 1532112469567471938
+CHANNEL_POKEMON = 1561108240404578324   # <- AGGIORNATO
+CHANNEL_ONEPIECE = 1557071963489574932  # <- AGGIORNATO
+CHANNEL_DRAGONBALL = 1557071904211472594 # <- AGGIORNATO
 CHANNEL_PREORDER = 1532029845481984260
-CHANNEL_ALTRO = 1532112759490351244
+CHANNEL_ALTRO = 1532112759490351244     # <- CONFERMATO
 
 def get_db_connection():
     if is_postgres:
@@ -432,7 +432,13 @@ class ModaleCreaProdottoStandard(discord.ui.Modal, title="Crea Nuovo Prodotto"):
             )
             
             target_channel_id = get_discord_channel_id(full_text)
+            
             channel = bot.get_channel(target_channel_id)
+            if not channel:
+                try:
+                    channel = await bot.fetch_channel(target_channel_id)
+                except Exception as e:
+                    print(f"Impossibile recuperare canale {target_channel_id}: {e}", flush=True)
             
             if not channel:
                 await interaction.followup.send("❌ Canale Discord di destinazione non trovato per l'hashtag inserito.", ephemeral=True)
@@ -624,33 +630,31 @@ def clean_message_text(text):
          
     return result, product_title, product_price
 
-# Userbot Telegram con diagnostica globale degli eventi
+# Userbot Telegram
 tg_client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
 
 @tg_client.on(events.NewMessage)
 async def debug_all_messages(event):
-    # Questo log stamperà QUALSIASI messaggio arrivi in qualsiasi chat monitorata dallo userbot
-    print(f"📥 [TELEGRAM EVENT] Ricevuto messaggio da Chat ID: {event.chat_id}", flush=True)
-    
     if event.chat_id != TELEGRAM_CHANNEL:
         return
 
-    print(f"🎯 Il messaggio proviene dal canale corretto ({TELEGRAM_CHANNEL})!", flush=True)
-
     async with processing_lock:
         main_text = event.raw_text or event.message.message or ""
-        print(f"📄 Testo letto: {main_text[:60]}...", flush=True)
-        
         valid = is_valid_product_message(main_text)
-        print(f"🔍 Esito is_valid_product_message: {valid}", flush=True)
 
         if not valid:
             return
 
         target_channel_id = get_discord_channel_id(main_text)
+        
         channel = bot.get_channel(target_channel_id)
         if not channel:
-            print(f"❌ Canale Discord ID {target_channel_id} non trovato!", flush=True)
+            try:
+                channel = await bot.fetch_channel(target_channel_id)
+            except Exception as e:
+                print(f"❌ Impossibile trovare o accedere al canale Discord {target_channel_id}: {e}", flush=True)
+
+        if not channel:
             return
 
         cleaned, title, price = clean_message_text(main_text)
